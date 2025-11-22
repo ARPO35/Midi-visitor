@@ -1,5 +1,6 @@
 {
   "name": "midi-visitor",
+  "homepage": "https://ARPO35.github.io/Midi-visitor",
   "private": true,
   "version": "0.0.0",
   "type": "module",
