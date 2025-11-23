@@ -18,7 +18,7 @@ const App: React.FC = () => {
   // -- Refs --
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const requestRef = useRef<number>(0); // 初始化为 0
+  const requestRef = useRef<number>(0);
   const startTimeRef = useRef<number>(0);
   const pausedTimeRef = useRef<number>(0);
   const lastNoteCheckTimeRef = useRef<number>(0);
@@ -69,12 +69,7 @@ const App: React.FC = () => {
             tracks: trackInfos,
             duration: midi.duration
           });
-          
-          // Uploading new file stops current playback
-          setIsPlaying(false);
-          pausedTimeRef.current = 0;
-          setPlaybackTime(0);
-          lastNoteCheckTimeRef.current = 0;
+          stopPlayback();
         } catch (err) {
           console.error("Failed to parse MIDI", err);
           alert("Invalid MIDI file");
@@ -86,14 +81,6 @@ const App: React.FC = () => {
   };
 
   // -- Playback Controls --
-  // Define stopPlayback first since togglePlay depends on it logic-wise
-  const stopPlayback = useCallback(() => {
-    setIsPlaying(false);
-    pausedTimeRef.current = 0;
-    setPlaybackTime(0);
-    lastNoteCheckTimeRef.current = 0;
-  }, []);
-
   const togglePlay = async () => {
     if (!midiData) return;
     await audioEngine.resume();
@@ -107,6 +94,13 @@ const App: React.FC = () => {
     }
   };
 
+  const stopPlayback = () => {
+    setIsPlaying(false);
+    pausedTimeRef.current = 0;
+    setPlaybackTime(0);
+    lastNoteCheckTimeRef.current = 0;
+  };
+
   const handleSeek = (time: number) => {
     pausedTimeRef.current = time;
     setPlaybackTime(time);
@@ -116,19 +110,9 @@ const App: React.FC = () => {
     }
   };
 
-  // -- Helper for Drawing --
-  const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
-    if (width <= 0 || height <= 0) return;
-    const r = Math.max(0, Math.min(radius, width/2, height/2));
-    ctx.beginPath();
-    ctx.roundRect(x, y, width, height, r);
-    ctx.fill();
-  };
-
   // -- Animation Loop --
   const animate = useCallback(() => {
     let currentTime = pausedTimeRef.current;
-    
     if (isPlaying) {
       currentTime = audioEngine.currentTime - startTimeRef.current;
       if (midiData && currentTime > midiData.duration + 1) {
@@ -137,12 +121,9 @@ const App: React.FC = () => {
       setPlaybackTime(currentTime);
     }
 
-    // Audio Sync
     if (isPlaying && midiData) {
       const checkStart = lastNoteCheckTimeRef.current;
       const checkEnd = currentTime;
-      
-      // Only loop through relevant part or optimize if array is huge (simple for now)
       for (const note of midiData.notes) {
         // Skip hidden tracks
         if (config.hiddenTracks.includes(note.track)) continue;
@@ -155,17 +136,10 @@ const App: React.FC = () => {
     }
 
     // Canvas Drawing
-    if (!canvasRef.current || !containerRef.current) {
-        requestRef.current = requestAnimationFrame(animate);
-        return;
-    }
-    
+    if (!canvasRef.current || !containerRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    if (!ctx) {
-        requestRef.current = requestAnimationFrame(animate);
-        return;
-    }
+    if (!ctx) return;
 
     if (canvas.width !== containerRef.current.clientWidth || canvas.height !== containerRef.current.clientHeight) {
       canvas.width = containerRef.current.clientWidth;
@@ -199,7 +173,7 @@ const App: React.FC = () => {
     ctx.roundRect(activeX, activeY, activeW, activeH, config.borderRadius);
     ctx.clip();
 
-    // Draw Playhead
+    // Draw Playhead / Center Line
     ctx.strokeStyle = config.playHeadColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -225,21 +199,29 @@ const App: React.FC = () => {
 
         if (config.direction === ScrollDirection.Horizontal) {
           // Horizontal Mode
+          // Time = X axis, Pitch = Y axis
           const x = activeCX + timeDelta * config.speed;
           const length = note.duration * config.speed * config.noteScale;
           
           if (x + length < activeX || x > activeX + activeW) continue;
           
+          // High pitch = Low Y (Up)
           const y = activeCY - pitchOffset; 
           
           drawRoundedRect(ctx, x, y - config.noteThickness/2, length, config.noteThickness, Math.min(4, config.noteThickness/2));
         } else {
           // Vertical Mode
+          // Time = Y axis, Pitch = X axis
+          
+          // Time flows vertically
           const y = activeCY - (timeDelta * config.speed);
           const length = note.duration * config.speed * config.noteScale;
 
           if (y - length > activeY + activeH || y < activeY) continue;
 
+          // Pitch determines X position
+          // Low Midi (negative offset) -> Left
+          // High Midi (positive offset) -> Right
           const x = activeCX + pitchOffset;
           
           drawRoundedRect(ctx, x - config.noteThickness/2, y - length, config.noteThickness, length, Math.min(4, config.noteThickness/2));
@@ -250,7 +232,7 @@ const App: React.FC = () => {
     ctx.restore(); // Remove clip
 
     requestRef.current = requestAnimationFrame(animate);
-  }, [isPlaying, midiData, config, stopPlayback]);
+  }, [isPlaying, config, midiData]);
 
   // -- Effects --
   useEffect(() => {
@@ -260,13 +242,21 @@ const App: React.FC = () => {
     };
   }, [animate]);
 
+  const drawRoundedRect = (ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) => {
+    if (width <= 0 || height <= 0) return;
+    const r = Math.max(0, Math.min(radius, width/2, height/2));
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, r);
+    ctx.fill();
+  };
+
   // -- Visual Style Calculation for the Background Window --
   const windowStyle: React.CSSProperties = {
     top: `${config.boundTop}%`,
     bottom: `${config.boundBottom}%`,
     left: `${config.boundLeft}%`,
     right: `${config.boundRight}%`,
-    backgroundColor: config.windowBgColor,
+    background: config.windowBgColor, // Changed from backgroundColor to background to support gradients
     backdropFilter: `blur(${config.windowBlur}px)`,
     borderRadius: `${config.borderRadius}px`,
     border: `${config.borderWidth}px solid ${config.borderColor}`,
@@ -276,16 +266,15 @@ const App: React.FC = () => {
   const overlayStyle: React.CSSProperties = {
     position: 'absolute',
     inset: 0,
-    backgroundColor: config.overlayColor,
+    background: config.overlayColor, // Changed to background
     borderRadius: `${Math.max(0, config.borderRadius - config.borderWidth)}px`,
     pointerEvents: 'none',
   };
 
   return (
-    // eslint-disable-next-line react-dom/no-unsafe-inline-styles
     <div 
       className="w-full h-screen overflow-hidden relative select-none transition-colors duration-700"
-      style={{ backgroundColor: config.globalBgColor }}
+      style={{ background: config.globalBgColor }} // Changed to background
     >
       
       <Sidebar
@@ -307,11 +296,9 @@ const App: React.FC = () => {
       {/* Visual "Window" Layer */}
       <div 
         className="absolute z-0 transition-all duration-300 ease-out"
-        // eslint-disable-next-line react-dom/no-unsafe-inline-styles
         style={windowStyle}
       >
         {/* Internal Overlay Tint */}
-        {/* eslint-disable-next-line react-dom/no-unsafe-inline-styles */}
         <div style={overlayStyle}></div>
       </div>
 
