@@ -12,7 +12,13 @@ export interface VisualConfig {
   offset: number;            // Perpendicular offset to center notes
   direction: ScrollDirection;
   stretch: number;           // Gap between notes in pitch axis
+  startDelay: number;        // Delay in seconds before playback starts (pre-roll)
+  masterVolume: number;      // 0-100 (Display), maps to 0.0-0.2 (Gain)
   
+  // Audio Modifiers
+  transpose: number;         // Semitones (+/-)
+  bpm: number;               // Beats Per Minute (Absolute)
+
   // Viewport Boundaries (0-100 percentage of screen)
   boundTop: number;
   boundBottom: number;
@@ -64,4 +70,5 @@ export interface MidiData {
   notes: NoteData[];
   tracks: TrackInfo[];
   duration: number;
+  originalBpm: number;
 }

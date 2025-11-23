@@ -1,3 +1,4 @@
+
 // Simple sine wave synthesizer pool
 export class AudioEngine {
   private ctx: AudioContext;
@@ -9,7 +10,8 @@ export class AudioEngine {
     this.ctx = new AudioContextClass();
     
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.3; // Master volume to prevent clipping
+    // Default start low to prevent blast, but setVolume will override immediately in App
+    this.masterGain.gain.value = 0.2; 
     this.masterGain.connect(this.ctx.destination);
   }
 
@@ -28,18 +30,37 @@ export class AudioEngine {
   }
 
   /**
+   * Set volume based on UI range of 0-100
+   * Real max output gain is capped at 0.2 (20%)
+   * @param volume UI Value (0-100)
+   */
+  public setVolume(volume: number) {
+    // Map 0-100 to 0.0-0.2
+    const MAX_GAIN = 0.2;
+    const gainValue = (Math.max(0, Math.min(100, volume)) / 100) * MAX_GAIN;
+    
+    this.masterGain.gain.setTargetAtTime(gainValue, this.ctx.currentTime, 0.02);
+  }
+
+  /**
    * Plays a note
    * @param midi Note MIDI number
-   * @param duration duration in seconds
+   * @param duration duration in seconds (raw midi duration)
    * @param velocity velocity (0-1)
+   * @param transpose semitones to shift
+   * @param tempoMultiplier playback speed multiplier (to shorten duration)
    */
-  public playNote(midi: number, duration: number, velocity: number) {
+  public playNote(midi: number, duration: number, velocity: number, transpose: number = 0, tempoMultiplier: number = 1.0) {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
     // Frequency formula: f = 440 * 2^((d - 69)/12)
-    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+    // Add transpose to the midi number
+    const freq = 440 * Math.pow(2, (midi + transpose - 69) / 12);
     
+    // Scale duration by tempo (faster tempo = shorter note)
+    const actualDuration = duration / tempoMultiplier;
+
     osc.type = 'sine';
     osc.frequency.value = freq;
 
@@ -57,13 +78,13 @@ export class AudioEngine {
     gain.gain.linearRampToValueAtTime(velocity, now + attack);
     // Sustain (simplified) - handled by release schedule
     // Release
-    gain.gain.setValueAtTime(velocity, now + duration - release);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    gain.gain.setValueAtTime(velocity, now + actualDuration - release);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + actualDuration);
 
     osc.start(now);
-    osc.stop(now + duration + 0.1); // Stop shortly after release
+    osc.stop(now + actualDuration + 0.1); // Stop shortly after release
     
-    // Cleanup (Garbage collection handles disconnected nodes, but good practice to be explicit if complex)
+    // Cleanup 
     osc.onended = () => {
       osc.disconnect();
       gain.disconnect();

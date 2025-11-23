@@ -1,6 +1,5 @@
-
 import { ScrollDirection } from './types';
-import type { VisualConfig } from './types'; 
+import type { VisualConfig } from './types'; // 修复：使用 import type
 
 export const DEFAULT_CONFIG: VisualConfig = {
   speed: 300,
@@ -9,6 +8,12 @@ export const DEFAULT_CONFIG: VisualConfig = {
   offset: 0,
   direction: ScrollDirection.Horizontal,
   stretch: 20, 
+  startDelay: 0,
+  masterVolume: 100,
+  
+  transpose: 0,
+  bpm: 120,
+
   boundTop: 15,
   boundBottom: 15,
   boundLeft: 15,

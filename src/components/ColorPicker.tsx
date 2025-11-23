@@ -21,6 +21,7 @@ const hslaToString = ({ h, s, l, a }: HSLA) => {
 };
 
 const parseColor = (str: string): HSLA => {
+  // Basic safety check for complex strings that aren't simple colors
   if (str.startsWith('linear-gradient') || str.startsWith('url')) {
     return { h: 0, s: 0, l: 0, a: 1 }; 
   }
@@ -68,13 +69,19 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   
+  // Detect mode based on value string
   const initialMode = value.startsWith('linear-gradient') ? 'gradient' : value.startsWith('url') ? 'image' : 'solid';
   const [mode, setMode] = useState<Mode>(initialMode);
+
+  // Solid State
   const [hsla, setHsla] = useState<HSLA>(parseColor(value));
+
+  // Gradient State (Simplified: 2 stops)
   const [gradAngle, setGradAngle] = useState(180);
   const [gradColor1, setGradColor1] = useState('#000000');
   const [gradColor2, setGradColor2] = useState('#ffffff');
 
+  // Click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
@@ -85,6 +92,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isOpen]);
 
+  // Update handler for Solid
   const updateSolid = (newHsla: Partial<HSLA>) => {
     const updated = { ...hsla, ...newHsla };
     setHsla(updated);
@@ -93,11 +101,13 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
     }
   };
 
+  // Update handler for Gradient
   const updateGradient = (angle: number, c1: string, c2: string) => {
     const str = `linear-gradient(${angle}deg, ${c1}, ${c2})`;
     onChange(str);
   };
 
+  // Update handler for Image
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -113,12 +123,13 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
         <span className="text-[10px] text-zinc-500 uppercase tracking-wider group-hover:text-zinc-300 transition-colors">{label}</span>
         <button
           onClick={() => {
+            // Refresh internal state from current value
             const currentMode = value.startsWith('linear-gradient') ? 'gradient' : value.startsWith('url') ? 'image' : 'solid';
             setMode(currentMode);
             if (currentMode === 'solid') setHsla(parseColor(value));
             setIsOpen(!isOpen);
           }}
-          aria-label={`Pick color for ${label}`} // 修复 A11y
+          aria-label={`Change color for ${label}`}
           className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-md pl-2 pr-1 py-1 hover:border-zinc-600 transition-all"
         >
           <div 
@@ -126,6 +137,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
           >
              <div className="w-full h-full" style={{
                background: value,
+               // Fallback pattern for transparency
                backgroundColor: value.includes('url') ? '#000' : undefined
              }}></div>
           </div>
@@ -148,10 +160,12 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                  key={tab.id}
                  onClick={() => {
                    setMode(tab.id as Mode);
+                   // Set default values when switching
                    if (tab.id === 'solid') onChange(hslaToString(hsla));
                    if (tab.id === 'gradient') updateGradient(gradAngle, gradColor1, gradColor2);
+                   if (tab.id === 'image') { /* Keep current or wait for upload */ }
                  }}
-                 aria-label={tab.label} // 修复 A11y
+                 aria-label={tab.label}
                  className={`flex-1 py-1.5 flex items-center justify-center rounded text-xs transition-all ${
                    mode === tab.id ? 'bg-zinc-700 text-white shadow' : 'text-zinc-500 hover:text-zinc-300'
                  }`}
@@ -175,7 +189,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                      <input 
                        type="range" min="0" max={chan === 'h' ? 360 : 100} 
                        value={hsla[chan as keyof HSLA]} 
-                       aria-label={`Color ${chan === 'h' ? 'Hue' : chan === 's' ? 'Saturation' : 'Lightness'}`} // 修复 A11y
+                       aria-label={`Color ${chan.toUpperCase()} Slider`}
                        onChange={e => updateSolid({ [chan]: parseFloat(e.target.value) })}
                        className="w-full h-2 rounded-full appearance-none cursor-pointer bg-zinc-800 accent-zinc-400"
                        style={
@@ -197,7 +211,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                       <input 
                         type="range" min="0" max="1" step="0.01"
                         value={hsla.a} 
-                        aria-label="Alpha Transparency" // 修复 A11y
+                        aria-label="Alpha Transparency Slider"
                         onChange={e => updateSolid({ a: parseFloat(e.target.value) })}
                         className="absolute inset-0 w-full h-full appearance-none cursor-pointer bg-transparent z-10 accent-white"
                       />
@@ -213,7 +227,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                         setHsla(parseColor(color));
                         onChange(color);
                       }}
-                      aria-label={`Select color ${color}`} // 修复 A11y
+                      aria-label={`Preset color ${color}`}
                       className="w-5 h-5 rounded border border-zinc-700 hover:scale-110 hover:border-white transition-all shadow-sm"
                       style={{ backgroundColor: color }}
                     />
@@ -229,8 +243,8 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                   <span className="text-[10px] text-zinc-500">Angle</span>
                   <input 
                     type="number" 
-                    aria-label="Gradient Angle" // 修复 A11y
                     value={gradAngle} 
+                    aria-label="Gradient Angle"
                     onChange={(e) => {
                       const a = Number(e.target.value);
                       setGradAngle(a);
@@ -241,8 +255,8 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                </div>
                <input 
                   type="range" min="0" max="360" 
-                  aria-label="Gradient Angle Slider" // 修复 A11y
                   value={gradAngle}
+                  aria-label="Gradient Angle Slider"
                   onChange={(e) => {
                     const a = Number(e.target.value);
                     setGradAngle(a);
@@ -256,8 +270,8 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                     <div className="text-[10px] text-zinc-500">Start</div>
                     <input 
                       type="color" 
-                      aria-label="Gradient Start Color" // 修复 A11y
                       value={gradColor1}
+                      aria-label="Gradient Start Color"
                       onChange={(e) => {
                         setGradColor1(e.target.value);
                         updateGradient(gradAngle, e.target.value, gradColor2);
@@ -269,8 +283,8 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                     <div className="text-[10px] text-zinc-500">End</div>
                     <input 
                       type="color" 
-                      aria-label="Gradient End Color" // 修复 A11y
                       value={gradColor2}
+                      aria-label="Gradient End Color"
                       onChange={(e) => {
                         setGradColor2(e.target.value);
                         updateGradient(gradAngle, gradColor1, e.target.value);
@@ -291,7 +305,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
                  <input 
                    type="file" 
                    accept="image/*" 
-                   aria-label="Upload Image Background" // 修复 A11y
+                   aria-label="Upload Background Image"
                    onChange={handleImageUpload}
                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                  />

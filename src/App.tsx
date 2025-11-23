@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Midi } from '@tonejs/midi';
 import Sidebar from './components/Sidebar';
 import { DEFAULT_CONFIG } from './constants';
-import type { VisualConfig, MidiData, NoteData, TrackInfo } from './types'; // <--- 关键修复：添加 type 关键字
-import { ScrollDirection } from './types'; // Enum 作为值导入，不要加 type
+import type { VisualConfig, MidiData, NoteData, TrackInfo } from './types'; 
+import { ScrollDirection } from './types'; 
 import { audioEngine } from './services/audio';
 
 const App: React.FC = () => {
@@ -14,20 +14,34 @@ const App: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
-  
+  const [isDragging, setIsDragging] = useState(false);
+
   // -- Refs --
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<number>(0);
-  const startTimeRef = useRef<number>(0);
-  const pausedTimeRef = useRef<number>(0);
-  const lastNoteCheckTimeRef = useRef<number>(0);
+  // Playback Cursor: Tracks the current song time including Delay
+  const playbackCursorRef = useRef<number>(-config.startDelay);
+  const lastFrameTimeRef = useRef<number>(0);
   
-  // -- MIDI Processing --
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Tracks which notes we have already played to avoid duplicates in the loop
+  const lastNoteCheckTimeRef = useRef<number>(-config.startDelay);
 
+  // -- Effects --
+  useEffect(() => {
+    audioEngine.setVolume(config.masterVolume);
+  }, [config.masterVolume]);
+
+  // Sync Start Delay changes to the cursor if we are near the beginning/reset
+  useEffect(() => {
+    if (!isPlaying && playbackTime === 0) {
+      playbackCursorRef.current = -config.startDelay;
+      lastNoteCheckTimeRef.current = -config.startDelay;
+    }
+  }, [config.startDelay, isPlaying, playbackTime]);
+
+  // -- MIDI Processing Logic --
+  const processMidiFile = async (file: File) => {
     setFileName(file.name);
     const reader = new FileReader();
     
@@ -38,6 +52,14 @@ const App: React.FC = () => {
           const midi = new Midi(arrayBuffer);
           const allNotes: NoteData[] = [];
           const trackInfos: TrackInfo[] = [];
+
+          // --- 修复开始: 获取原始 BPM ---
+          // 如果 MIDI 文件包含 tempo 信息，取第一个作为初始 BPM，否则默认 120
+          let originalBpm = 120;
+          if (midi.header.tempos && midi.header.tempos.length > 0) {
+            originalBpm = midi.header.tempos[0].bpm;
+          }
+          // --- 修复结束 ---
           
           midi.tracks.forEach((track, index) => {
              if (track.notes.length > 0) {
@@ -64,11 +86,19 @@ const App: React.FC = () => {
           });
 
           allNotes.sort((a, b) => a.time - b.time);
+          
+          // --- 修复开始: 将 originalBpm 加入状态对象 ---
           setMidiData({
             notes: allNotes,
             tracks: trackInfos,
-            duration: midi.duration
+            duration: midi.duration,
+            originalBpm: originalBpm // 这里补上了缺失的属性
           });
+
+          // 更新当前配置的 BPM
+          setConfig(prev => ({ ...prev, bpm: originalBpm }));
+          // --- 修复结束 ---
+
           stopPlayback();
         } catch (err) {
           console.error("Failed to parse MIDI", err);
@@ -80,59 +110,157 @@ const App: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await processMidiFile(file);
+  };
+
+  // -- Drag & Drop Handlers --
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    const file = e.dataTransfer.files[0];
+    if (file && (file.name.endsWith('.mid') || file.name.endsWith('.midi'))) {
+      await processMidiFile(file);
+    }
+  };
+
   // -- Playback Controls --
-  const togglePlay = async () => {
+  const togglePlay = useCallback(async () => {
     if (!midiData) return;
     await audioEngine.resume();
+    
     if (isPlaying) {
       setIsPlaying(false);
-      pausedTimeRef.current = Math.max(0, audioEngine.currentTime - startTimeRef.current);
     } else {
       setIsPlaying(true);
-      startTimeRef.current = audioEngine.currentTime - pausedTimeRef.current;
-      lastNoteCheckTimeRef.current = pausedTimeRef.current;
+      lastFrameTimeRef.current = performance.now();
+      
+      // If we finished the song, reset to start
+      if (playbackCursorRef.current >= midiData.duration) {
+         playbackCursorRef.current = -config.startDelay;
+         lastNoteCheckTimeRef.current = -config.startDelay;
+      }
     }
-  };
+  }, [isPlaying, midiData, config.startDelay]);
 
-  const stopPlayback = () => {
+  const stopPlayback = useCallback(() => {
     setIsPlaying(false);
-    pausedTimeRef.current = 0;
+    playbackCursorRef.current = -config.startDelay;
+    lastNoteCheckTimeRef.current = -config.startDelay;
     setPlaybackTime(0);
-    lastNoteCheckTimeRef.current = 0;
-  };
+  }, [config.startDelay]);
+
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input
+      if (e.target instanceof HTMLInputElement) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      }
+      if (e.code === 'KeyR') {
+        stopPlayback();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [togglePlay, stopPlayback]);
 
   const handleSeek = (time: number) => {
-    pausedTimeRef.current = time;
-    setPlaybackTime(time);
+    // time is target MIDI time
+    playbackCursorRef.current = time;
     lastNoteCheckTimeRef.current = time;
-    if (isPlaying) {
-      startTimeRef.current = audioEngine.currentTime - time;
-    }
+    setPlaybackTime(time);
   };
+
+  const handleSongEnd = useCallback(() => {
+     setIsPlaying(false);
+     audioEngine.setVolume(0); // Soft mute
+     playbackCursorRef.current = -config.startDelay;
+     lastNoteCheckTimeRef.current = -config.startDelay;
+     setPlaybackTime(0);
+
+     setTimeout(() => {
+       audioEngine.setVolume(config.masterVolume);
+     }, 150);
+  }, [config.masterVolume, config.startDelay]);
 
   // -- Animation Loop --
   const animate = useCallback(() => {
-    let currentTime = pausedTimeRef.current;
+    const now = performance.now();
+    
     if (isPlaying) {
-      currentTime = audioEngine.currentTime - startTimeRef.current;
-      if (midiData && currentTime > midiData.duration + 1) {
-        stopPlayback();
-      }
-      setPlaybackTime(currentTime);
-    }
+      // Calculate delta time in seconds
+      const dt = (now - lastFrameTimeRef.current) / 1000;
+      
+      // Calculate BPM Multiplier
+      // If no MIDI loaded, defaults to 1.0. If loaded, uses Ratio (Current / Original)
+      const tempoMultiplier = (midiData && midiData.originalBpm) 
+        ? config.bpm / midiData.originalBpm 
+        : 1.0;
+      
+      // Advance cursor by delta * multiplier
+      playbackCursorRef.current += dt * tempoMultiplier;
 
-    if (isPlaying && midiData) {
-      const checkStart = lastNoteCheckTimeRef.current;
-      const checkEnd = currentTime;
-      for (const note of midiData.notes) {
-        // Skip hidden tracks
-        if (config.hiddenTracks.includes(note.track)) continue;
-
-        if (note.time >= checkStart && note.time < checkEnd) {
-           audioEngine.playNote(note.midi, note.duration, note.velocity);
+      // Update UI Time (clamped to 0 for start delay)
+      if (midiData) {
+        if (playbackCursorRef.current > midiData.duration + 1.0) {
+          handleSongEnd();
+        } else {
+          setPlaybackTime(Math.max(0, playbackCursorRef.current));
         }
       }
-      lastNoteCheckTimeRef.current = currentTime;
+    }
+    
+    lastFrameTimeRef.current = now;
+
+    // -- Audio Triggering --
+    const currentTime = playbackCursorRef.current;
+    
+    if (isPlaying && midiData && currentTime >= 0) {
+       const prevTime = lastNoteCheckTimeRef.current;
+       
+       // Only process if we moved forward
+       if (currentTime > prevTime) {
+          
+          const tempoMultiplier = (midiData.originalBpm) 
+              ? config.bpm / midiData.originalBpm 
+              : 1.0;
+
+          for (const note of midiData.notes) {
+            if (config.hiddenTracks.includes(note.track)) continue;
+
+            // Trigger if note start time falls within this frame's window
+            if (note.time >= prevTime && note.time < currentTime) {
+               audioEngine.playNote(
+                 note.midi, 
+                 note.duration, 
+                 note.velocity, 
+                 config.transpose, 
+                 tempoMultiplier
+               );
+            }
+          }
+          lastNoteCheckTimeRef.current = currentTime;
+       }
+    } else if (isPlaying && currentTime < 0) {
+       // Reset check time if in pre-roll
+       lastNoteCheckTimeRef.current = currentTime;
     }
 
     // Canvas Drawing
@@ -174,17 +302,19 @@ const App: React.FC = () => {
     ctx.clip();
 
     // Draw Playhead / Center Line
-    ctx.strokeStyle = config.playHeadColor;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    if (config.direction === ScrollDirection.Horizontal) {
-      ctx.moveTo(activeCX, activeY);
-      ctx.lineTo(activeCX, activeY + activeH);
-    } else {
-      ctx.moveTo(activeX, activeCY);
-      ctx.lineTo(activeX + activeW, activeCY);
-    }
-    ctx.stroke();
+    if (midiData) {
+      ctx.strokeStyle = config.playHeadColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (config.direction === ScrollDirection.Horizontal) {
+        ctx.moveTo(activeCX, activeY);
+        ctx.lineTo(activeCX, activeY + activeH);
+      } else {
+        ctx.moveTo(activeX, activeCY);
+        ctx.lineTo(activeX + activeW, activeCY);
+      }
+      ctx.stroke();
+  }
 
     // Draw Notes
     if (midiData) {
@@ -195,33 +325,26 @@ const App: React.FC = () => {
         if (config.hiddenTracks.includes(note.track)) continue;
 
         const timeDelta = note.time - currentTime;
+        
         const pitchOffset = (note.midi - 60) * config.stretch + config.offset;
 
         if (config.direction === ScrollDirection.Horizontal) {
           // Horizontal Mode
-          // Time = X axis, Pitch = Y axis
           const x = activeCX + timeDelta * config.speed;
           const length = note.duration * config.speed * config.noteScale;
           
           if (x + length < activeX || x > activeX + activeW) continue;
           
-          // High pitch = Low Y (Up)
           const y = activeCY - pitchOffset; 
           
           drawRoundedRect(ctx, x, y - config.noteThickness/2, length, config.noteThickness, Math.min(4, config.noteThickness/2));
         } else {
           // Vertical Mode
-          // Time = Y axis, Pitch = X axis
-          
-          // Time flows vertically
           const y = activeCY - (timeDelta * config.speed);
           const length = note.duration * config.speed * config.noteScale;
 
           if (y - length > activeY + activeH || y < activeY) continue;
 
-          // Pitch determines X position
-          // Low Midi (negative offset) -> Left
-          // High Midi (positive offset) -> Right
           const x = activeCX + pitchOffset;
           
           drawRoundedRect(ctx, x - config.noteThickness/2, y - length, config.noteThickness, length, Math.min(4, config.noteThickness/2));
@@ -232,7 +355,7 @@ const App: React.FC = () => {
     ctx.restore(); // Remove clip
 
     requestRef.current = requestAnimationFrame(animate);
-  }, [isPlaying, config, midiData]);
+  }, [isPlaying, config, midiData, handleSongEnd]);
 
   // -- Effects --
   useEffect(() => {
@@ -256,7 +379,7 @@ const App: React.FC = () => {
     bottom: `${config.boundBottom}%`,
     left: `${config.boundLeft}%`,
     right: `${config.boundRight}%`,
-    background: config.windowBgColor, // Changed from backgroundColor to background to support gradients
+    background: config.windowBgColor, 
     backdropFilter: `blur(${config.windowBlur}px)`,
     borderRadius: `${config.borderRadius}px`,
     border: `${config.borderWidth}px solid ${config.borderColor}`,
@@ -266,7 +389,7 @@ const App: React.FC = () => {
   const overlayStyle: React.CSSProperties = {
     position: 'absolute',
     inset: 0,
-    background: config.overlayColor, // Changed to background
+    background: config.overlayColor, 
     borderRadius: `${Math.max(0, config.borderRadius - config.borderWidth)}px`,
     pointerEvents: 'none',
   };
@@ -274,7 +397,10 @@ const App: React.FC = () => {
   return (
     <div 
       className="w-full h-screen overflow-hidden relative select-none transition-colors duration-700"
-      style={{ background: config.globalBgColor }} // Changed to background
+      style={{ background: config.globalBgColor }} 
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
       
       <Sidebar
@@ -307,12 +433,16 @@ const App: React.FC = () => {
         <canvas ref={canvasRef} className="block" />
       </div>
 
-      {/* Empty State Hint */}
-      {!midiData && !isSidebarOpen && (
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center border-4 border-dashed border-white/20 m-4 rounded-3xl pointer-events-none">
+            <h2 className="text-4xl font-light tracking-widest text-white">DROP MIDI FILE</h2>
+        </div>
+      )}
+      {!midiData && !isSidebarOpen && !isDragging &&(
         <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
            <div className="text-center space-y-4 animate-pulse opacity-50">
-             <h1 className="text-4xl font-thin tracking-[0.3em] text-white">SINEWAVE</h1>
-             <p className="text-zinc-400 text-sm tracking-widest uppercase">Import MIDI to Visualize</p>
+             <h1 className="text-4xl font-thin tracking-[0.3em] text-white">MIDI-Visitor</h1>
+             <p className="text-zinc-400 text-sm tracking-widest uppercase">Minimalist MIDI Visualizer</p>
            </div>
         </div>
       )}
