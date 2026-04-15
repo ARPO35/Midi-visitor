@@ -1,26 +1,44 @@
+import type { AudioLoadResult } from '../types';
 
-// Simple sine wave synthesizer pool
-export class AudioEngine {
+const MAX_SYNTH_GAIN = 0.2;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+class AudioEngine {
   private ctx: AudioContext;
   private masterGain: GainNode;
+  private mediaElement: HTMLAudioElement;
+  private mediaSource: MediaElementAudioSourceNode;
+  private currentAudioUrl: string | null = null;
 
   constructor() {
-    // Initialize standard AudioContext
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     this.ctx = new AudioContextClass();
-    
+
     this.masterGain = this.ctx.createGain();
-    // Default start low to prevent blast, but setVolume will override immediately in App
-    this.masterGain.gain.value = 0.2; 
+    this.masterGain.gain.value = MAX_SYNTH_GAIN;
     this.masterGain.connect(this.ctx.destination);
+
+    this.mediaElement = new Audio();
+    this.mediaElement.preload = 'auto';
+    this.mediaSource = this.ctx.createMediaElementSource(this.mediaElement);
+    this.mediaSource.connect(this.masterGain);
   }
 
-  public get currentTime() {
-    return this.ctx.currentTime;
+  public get mediaCurrentTime() {
+    return this.mediaElement.currentTime || 0;
   }
 
-  public get state() {
-    return this.ctx.state;
+  public get mediaPaused() {
+    return this.mediaElement.paused;
+  }
+
+  public get mediaDuration() {
+    return Number.isFinite(this.mediaElement.duration) ? this.mediaElement.duration : 0;
   }
 
   public async resume() {
@@ -29,42 +47,99 @@ export class AudioEngine {
     }
   }
 
-  /**
-   * Set volume based on UI range of 0-100
-   * Real max output gain is capped at 0.2 (20%)
-   * @param volume UI Value (0-100)
-   */
   public setVolume(volume: number) {
-    // Map 0-100 to 0.0-0.2
-    const MAX_GAIN = 0.2;
-    const gainValue = (Math.max(0, Math.min(100, volume)) / 100) * MAX_GAIN;
-    
+    const gainValue = (clamp(volume, 0, 100) / 100) * MAX_SYNTH_GAIN;
     this.masterGain.gain.setTargetAtTime(gainValue, this.ctx.currentTime, 0.02);
   }
 
-  /**
-   * Plays a note
-   * @param midi Note MIDI number
-   * @param duration duration in seconds (raw midi duration)
-   * @param velocity velocity (0-1)
-   * @param transpose semitones to shift
-   * @param tempoMultiplier playback speed multiplier (to shorten duration)
-   */
-  public playNote(midi: number, duration: number, velocity: number, transpose: number = 0, tempoMultiplier: number = 1.0) {
+  public async loadAudioFile(file: File): Promise<AudioLoadResult> {
+    const arrayBuffer = await file.arrayBuffer();
+    const decodedBuffer = await this.ctx.decodeAudioData(arrayBuffer.slice(0));
+    const channelBuffers = Array.from({ length: decodedBuffer.numberOfChannels }, (_, channelIndex) =>
+      new Float32Array(decodedBuffer.getChannelData(channelIndex)).buffer
+    );
+
+    this.clearAudio();
+
+    const objectUrl = URL.createObjectURL(file);
+    this.mediaElement.src = objectUrl;
+    this.mediaElement.load();
+
+    await new Promise<void>((resolve, reject) => {
+      const handleCanPlay = () => {
+        cleanup();
+        resolve();
+      };
+
+      const handleError = () => {
+        cleanup();
+        reject(new Error('Failed to load audio file'));
+      };
+
+      const cleanup = () => {
+        this.mediaElement.removeEventListener('canplaythrough', handleCanPlay);
+        this.mediaElement.removeEventListener('error', handleError);
+      };
+
+      this.mediaElement.addEventListener('canplaythrough', handleCanPlay, { once: true });
+      this.mediaElement.addEventListener('error', handleError, { once: true });
+    });
+
+    this.currentAudioUrl = objectUrl;
+
+    return {
+      fileName: file.name,
+      objectUrl,
+      duration: decodedBuffer.duration,
+      sampleRate: decodedBuffer.sampleRate,
+      channelCount: decodedBuffer.numberOfChannels,
+      totalSamples: decodedBuffer.length,
+      channelBuffers,
+    };
+  }
+
+  public clearAudio() {
+    this.pauseMedia();
+    this.seekMedia(0);
+
+    if (this.currentAudioUrl) {
+      URL.revokeObjectURL(this.currentAudioUrl);
+      this.currentAudioUrl = null;
+    }
+
+    this.mediaElement.removeAttribute('src');
+    this.mediaElement.load();
+  }
+
+  public async playMedia() {
+    await this.resume();
+    await this.mediaElement.play();
+  }
+
+  public pauseMedia() {
+    this.mediaElement.pause();
+  }
+
+  public seekMedia(time: number) {
+    const safeTime = clamp(time, 0, this.mediaDuration || Number.MAX_SAFE_INTEGER);
+    this.mediaElement.currentTime = safeTime;
+  }
+
+  public playNote(
+    midi: number,
+    duration: number,
+    velocity: number,
+    transpose: number = 0,
+    tempoMultiplier: number = 1.0
+  ) {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-
-    // Frequency formula: f = 440 * 2^((d - 69)/12)
-    // Add transpose to the midi number
     const freq = 440 * Math.pow(2, (midi + transpose - 69) / 12);
-    
-    // Scale duration by tempo (faster tempo = shorter note)
     const actualDuration = duration / tempoMultiplier;
 
     osc.type = 'sine';
     osc.frequency.value = freq;
 
-    // Envelope
     const attack = 0.01;
     const release = 0.05;
     const now = this.ctx.currentTime;
@@ -72,19 +147,14 @@ export class AudioEngine {
     osc.connect(gain);
     gain.connect(this.masterGain);
 
-    // Start at 0
     gain.gain.setValueAtTime(0, now);
-    // Attack to velocity
     gain.gain.linearRampToValueAtTime(velocity, now + attack);
-    // Sustain (simplified) - handled by release schedule
-    // Release
-    gain.gain.setValueAtTime(velocity, now + actualDuration - release);
+    gain.gain.setValueAtTime(velocity, Math.max(now + attack, now + actualDuration - release));
     gain.gain.exponentialRampToValueAtTime(0.001, now + actualDuration);
 
     osc.start(now);
-    osc.stop(now + actualDuration + 0.1); // Stop shortly after release
-    
-    // Cleanup 
+    osc.stop(now + actualDuration + 0.1);
+
     osc.onended = () => {
       osc.disconnect();
       gain.disconnect();

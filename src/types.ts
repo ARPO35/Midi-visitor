@@ -18,6 +18,12 @@ export interface VisualConfig {
   // Audio Modifiers
   transpose: number;         // Semitones (+/-)
   bpm: number;               // Beats Per Minute (Absolute)
+  audioOffsetMs: number;     // External audio offset relative to MIDI
+  midiBpmOffset: number;     // Delta applied to original MIDI BPM
+  showWaveform: boolean;     // Show waveform overlay for sync calibration
+  waveformStrokeColor: string;
+  waveformFillColor: string;
+  waveformSampleRate: number;
 
   // Viewport Boundaries (0-100 percentage of screen)
   boundTop: number;
@@ -72,3 +78,104 @@ export interface MidiData {
   duration: number;
   originalBpm: number;
 }
+
+export interface LoadedAudioData {
+  fileName: string;
+  objectUrl: string;
+  duration: number;
+  sampleRate: number;
+  channelCount: number;
+  totalSamples: number;
+}
+
+export interface AudioLoadResult extends LoadedAudioData {
+  channelBuffers: ArrayBuffer[];
+}
+
+export interface WaveformChunkPayload {
+  peaksPerSecond: number;
+  chunkIndex: number;
+  data: ArrayBuffer;
+}
+
+export interface WaveformLevelCache {
+  peaksPerSecond: number;
+  chunks: Map<number, Float32Array>;
+}
+
+export interface WaveformCache {
+  generationId: number;
+  peaksPerSecond: number[];
+  chunkDurationSec: number;
+  totalChunks: number;
+  duration: number;
+  levels: Map<number, WaveformLevelCache>;
+  completedChunks: number;
+}
+
+export interface WaveformBuildProgress {
+  generationId: number;
+  peaksPerSecond: number[];
+  completedChunks: number;
+  totalChunks: number;
+  status: 'idle' | 'building' | 'complete';
+}
+
+export interface WaveformBuildStartRequest {
+  type: 'startBuild';
+  generationId: number;
+  sampleRate: number;
+  duration: number;
+  totalSamples: number;
+  channelBuffers: ArrayBuffer[];
+  peaksPerSecond: number[];
+  chunkDurationSec: number;
+}
+
+export interface WaveformBuildCancelRequest {
+  type: 'cancelBuild';
+  generationId: number;
+}
+
+export type WaveformBuildRequest =
+  | WaveformBuildStartRequest
+  | WaveformBuildCancelRequest;
+
+export interface WaveformChunkCompleteEvent {
+  type: 'chunkComplete';
+  generationId: number;
+  chunkIndex: number;
+  totalChunks: number;
+  completedChunks: number;
+  chunks: WaveformChunkPayload[];
+}
+
+export interface WaveformProgressEvent {
+  type: 'progress';
+  generationId: number;
+  completedChunks: number;
+  totalChunks: number;
+  peaksPerSecond: number[];
+  status: 'building';
+}
+
+export interface WaveformCompleteEvent {
+  type: 'complete';
+  generationId: number;
+  completedChunks: number;
+  totalChunks: number;
+  peaksPerSecond: number[];
+  status: 'complete';
+}
+
+export interface WaveformErrorEvent {
+  type: 'error';
+  generationId: number;
+  message: string;
+}
+
+export type WaveformBuildEvent =
+  | WaveformChunkCompleteEvent
+  | WaveformProgressEvent
+  | WaveformCompleteEvent
+  | WaveformErrorEvent;

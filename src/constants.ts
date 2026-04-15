@@ -13,6 +13,12 @@ export const DEFAULT_CONFIG: VisualConfig = {
   
   transpose: 0,
   bpm: 120,
+  audioOffsetMs: 0,
+  midiBpmOffset: 0,
+  showWaveform: true,
+  waveformStrokeColor: 'rgba(255, 255, 255, 0.35)',
+  waveformFillColor: 'rgba(255, 255, 255, 0.08)',
+  waveformSampleRate: 480,
 
   boundTop: 15,
   boundBottom: 15,
