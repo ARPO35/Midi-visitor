@@ -1,7 +1,5 @@
 import type { WaveformLineData } from '../types';
 
-const HIGH_DETAIL_SAMPLES_PER_PIXEL_THRESHOLD = 8;
-
 export const buildWaveformLineData = (
   channelBuffers: ArrayBuffer[],
   totalSamples: number,
@@ -33,17 +31,4 @@ export const buildWaveformLineData = (
     sampleRate,
     totalSamples,
   };
-};
-
-export const shouldRenderWaveformLine = (
-  sampleRate: number,
-  visibleDuration: number,
-  axisSpan: number
-) => {
-  if (sampleRate <= 0 || visibleDuration <= 0 || axisSpan <= 0) {
-    return false;
-  }
-
-  const samplesPerPixel = (visibleDuration * sampleRate) / axisSpan;
-  return samplesPerPixel <= HIGH_DETAIL_SAMPLES_PER_PIXEL_THRESHOLD;
 };

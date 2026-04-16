@@ -125,7 +125,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const waveformStatusLabel =
-    waveformBuildProgress.status === 'building'
+    !config.showWaveform
+      ? 'Off'
+      : config.waveformMode === 'pcm'
+        ? 'Direct PCM'
+        : waveformBuildProgress.status === 'building'
       ? `Building ${waveformBuildProgress.completedChunks}/${waveformBuildProgress.totalChunks}`
       : waveformBuildProgress.status === 'complete'
         ? 'Ready'
@@ -312,23 +316,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                           </div>
                         </div>
                       </div>
-
-                      <button
-                        onClick={() => updateConfig('showWaveform', !config.showWaveform)}
-                        className={`w-full py-2 rounded-lg border transition-colors flex items-center justify-center gap-2 ${
-                          config.showWaveform
-                            ? 'border-white/20 bg-white/10 text-white'
-                            : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500'
-                        }`}
-                      >
-                        <AudioWaveform size={16} />
-                        <span className="text-xs uppercase tracking-wider">{config.showWaveform ? 'Waveform On' : 'Waveform Off'}</span>
-                      </button>
-
-                      <div className="flex items-center justify-between rounded-lg border border-zinc-700/50 bg-black/20 px-3 py-2 text-[10px] uppercase tracking-wider text-zinc-500">
-                        <span>Waveform Cache</span>
-                        <span className="font-mono text-zinc-300">{waveformStatusLabel}</span>
-                      </div>
                     </>
                   )}
 
@@ -419,6 +406,83 @@ const Sidebar: React.FC<SidebarProps> = ({
               <RangeControl label="Shadow Y" value={config.shadowY} min={-50} max={50} onChange={(v) => updateConfig('shadowY', v)} />
             </div>
           </Section>
+
+          {hasExternalAudio && (
+            <Section title="Waveform" icon={<AudioWaveform size={16} />}>
+              <div className="space-y-4">
+                <button
+                  onClick={() => updateConfig('showWaveform', !config.showWaveform)}
+                  className={`w-full py-2 rounded-lg border transition-colors flex items-center justify-center gap-2 ${
+                    config.showWaveform
+                      ? 'border-white/20 bg-white/10 text-white'
+                      : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500'
+                  }`}
+                >
+                  <AudioWaveform size={16} />
+                  <span className="text-xs uppercase tracking-wider">{config.showWaveform ? 'Waveform On' : 'Waveform Off'}</span>
+                </button>
+
+                <div className="flex items-center justify-between rounded-lg border border-zinc-700/50 bg-black/20 px-3 py-2 text-[10px] uppercase tracking-wider text-zinc-500">
+                  <span>Waveform Cache</span>
+                  <span className="font-mono text-zinc-300">{waveformStatusLabel}</span>
+                </div>
+
+                <div className="rounded-xl border border-zinc-700/50 bg-black/20 p-4 space-y-4">
+                  <div className="flex rounded-lg p-1 bg-zinc-900/70">
+                    <button
+                      onClick={() => updateConfig('waveformMode', 'peak')}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+                        config.waveformMode === 'peak'
+                          ? 'bg-zinc-600 text-white shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      Peak
+                    </button>
+                    <button
+                      onClick={() => updateConfig('waveformMode', 'pcm')}
+                      className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+                        config.waveformMode === 'pcm'
+                          ? 'bg-zinc-600 text-white shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      PCM
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <ColorPicker label="Waveform Line" value={config.waveformStrokeColor} onChange={(v) => updateConfig('waveformStrokeColor', v)} />
+                  </div>
+
+                  <RangeControl
+                    label="Waveform Line Width"
+                    value={config.waveformLineWidth}
+                    min={0.5}
+                    max={8}
+                    step={0.1}
+                    onChange={(v) => updateConfig('waveformLineWidth', v)}
+                  />
+
+                  {config.waveformMode === 'peak' ? (
+                    <div className="space-y-4 border-t border-zinc-800/50 pt-4">
+                      <div className="space-y-1">
+                        <ColorPicker label="Waveform Fill" value={config.waveformFillColor} onChange={(v) => updateConfig('waveformFillColor', v)} />
+                      </div>
+                      <WaveformPeakSampleRateControl
+                        value={config.waveformPeakSampleRate}
+                        onChange={(v) => updateConfig('waveformPeakSampleRate', v)}
+                      />
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-zinc-700/50 bg-zinc-950/50 px-3 py-2 text-[11px] leading-5 text-zinc-500">
+                      PCM mode draws the direct mixed waveform line and does not use the peak cache.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Section>
+          )}
 
           <Section title="Notes & Layout" icon={<Monitor size={16} />}>
             <div className="space-y-4">
@@ -584,6 +648,84 @@ const BpmInput: React.FC<{
       }}
       className="w-full bg-zinc-800 border border-zinc-600 rounded text-xs px-2 py-1.5 text-right text-white focus:outline-none focus:border-white transition-colors font-mono"
     />
+  );
+};
+
+const WaveformPeakSampleRateControl: React.FC<{
+  value: number | null;
+  onChange: (value: number | null) => void;
+}> = ({ value, onChange }) => {
+  const [draft, setDraft] = useState(value === null ? '960' : value.toString());
+  const lastManualValueRef = useRef(value ?? 960);
+
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+
+    if (trimmed === '' || !Number.isFinite(parsed)) {
+      setDraft(lastManualValueRef.current.toString());
+      return;
+    }
+
+    const nextValue = Math.min(100000, Math.max(1, Math.round(parsed)));
+    lastManualValueRef.current = nextValue;
+    setDraft(nextValue.toString());
+    onChange(nextValue);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className="text-[10px] text-zinc-500 uppercase tracking-wider">FFT Sample Rate</label>
+        <span className="text-[10px] font-mono text-zinc-400">{value === null ? 'Auto' : value}</span>
+      </div>
+
+      <div className="flex rounded-lg p-1 bg-zinc-900/70">
+        <button
+          onClick={() => onChange(null)}
+          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+            value === null ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Auto
+        </button>
+        <button
+          onClick={() => {
+            const manualValue = value ?? lastManualValueRef.current;
+            lastManualValueRef.current = manualValue;
+            setDraft(manualValue.toString());
+            onChange(manualValue);
+          }}
+          className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
+            value !== null ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          Manual
+        </button>
+      </div>
+
+      {value !== null && (
+        <input
+          type="text"
+          inputMode="numeric"
+          aria-label="Waveform Peak Sample Rate"
+          value={draft}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            }
+            if (e.key === 'Escape') {
+              setDraft(lastManualValueRef.current.toString());
+              e.currentTarget.blur();
+            }
+          }}
+          className="w-full bg-zinc-800 border border-zinc-600 rounded text-xs px-2 py-1.5 text-right text-white focus:outline-none focus:border-white transition-colors font-mono"
+        />
+      )}
+    </div>
   );
 };
 

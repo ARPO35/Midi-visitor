@@ -4,6 +4,8 @@ export enum ScrollDirection {
   Vertical = 'vertical'      // Top to Bottom
 }
 
+export type WaveformMode = 'peak' | 'pcm';
+
 export interface VisualConfig {
   // Core
   speed: number;             // Pixels per second
@@ -21,9 +23,11 @@ export interface VisualConfig {
   audioOffsetMs: number;     // External audio offset relative to MIDI
   midiBpmOffset: number;     // Delta applied to original MIDI BPM
   showWaveform: boolean;     // Show waveform overlay for sync calibration
+  waveformMode: WaveformMode;
   waveformStrokeColor: string;
+  waveformLineWidth: number;
   waveformFillColor: string;
-  waveformSampleRate: number;
+  waveformPeakSampleRate: number | null;
 
   // Viewport Boundaries (0-100 percentage of screen)
   boundTop: number;

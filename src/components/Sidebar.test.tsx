@@ -141,6 +141,58 @@ describe('Sidebar', () => {
     expect(renderProps.togglePlay).toHaveBeenCalledTimes(1);
   });
 
+  it('switches waveform mode tabs and updates shared waveform settings', async () => {
+    const user = userEvent.setup();
+    const { renderProps, setConfigMock } = makeProps({
+      hasExternalAudio: true,
+      audioFileName: 'audio.wav',
+    });
+    render(<Sidebar {...renderProps} />);
+
+    expect(screen.getByText('Waveform Fill')).toBeInTheDocument();
+    expect(screen.queryByText(/direct mixed waveform line/i)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Waveform Line Width'), { target: { value: '2.5' } });
+    expect(setConfigMock).toHaveBeenCalledTimes(1);
+    let next = resolveUpdater(setConfigMock.mock.calls[0][0], renderProps.config);
+    expect(next.waveformLineWidth).toBe(2.5);
+
+    await user.click(screen.getByRole('button', { name: 'PCM' }));
+    expect(setConfigMock).toHaveBeenCalledTimes(2);
+    next = resolveUpdater(setConfigMock.mock.calls[1][0], renderProps.config);
+    expect(next.waveformMode).toBe('pcm');
+  });
+
+  it('supports auto and manual peak sample rate input', async () => {
+    const user = userEvent.setup();
+    const { renderProps, setConfigMock } = makeProps({
+      hasExternalAudio: true,
+      audioFileName: 'audio.wav',
+    });
+    const { rerender } = render(<Sidebar {...renderProps} />);
+
+    await user.click(screen.getByRole('button', { name: 'Manual' }));
+    expect(setConfigMock).toHaveBeenCalledTimes(1);
+    let next = resolveUpdater(setConfigMock.mock.calls[0][0], renderProps.config);
+    expect(next.waveformPeakSampleRate).toBe(960);
+
+    rerender(<Sidebar {...renderProps} config={next} />);
+    const sampleRateInput = screen.getByLabelText('Waveform Peak Sample Rate');
+
+    await user.clear(sampleRateInput);
+    await user.type(sampleRateInput, '2048');
+    fireEvent.blur(sampleRateInput);
+
+    expect(setConfigMock).toHaveBeenCalledTimes(2);
+    next = resolveUpdater(setConfigMock.mock.calls[1][0], next);
+    expect(next.waveformPeakSampleRate).toBe(2048);
+
+    await user.click(screen.getByRole('button', { name: 'Auto' }));
+    expect(setConfigMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    next = resolveUpdater(setConfigMock.mock.calls.at(-1)?.[0], next);
+    expect(next.waveformPeakSampleRate).toBeNull();
+  });
+
   it('maps the speed slider exponentially into the high-speed range', () => {
     const { renderProps, setConfigMock } = makeProps();
     render(<Sidebar {...renderProps} />);

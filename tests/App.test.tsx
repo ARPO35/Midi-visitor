@@ -37,9 +37,9 @@ type SidebarMockProps = {
 };
 
 type WaveformBuilderInstance = {
-  startBuild: () => void;
-  cancelBuild: () => void;
-  dispose: () => void;
+  startBuild: ReturnType<typeof vi.fn>;
+  cancelBuild: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
 };
 
 const midiFixture: MidiFixture = {
@@ -120,6 +120,10 @@ vi.mock('../src/components/Sidebar', () => ({
       <div data-testid="audio-file">{props.audioFileName ?? ''}</div>
       <div data-testid="waveform-status">{props.waveformBuildProgress.status}</div>
       <div data-testid="audio-offset">{props.config.audioOffsetMs}</div>
+      <div data-testid="waveform-mode">{props.config.waveformMode}</div>
+      <div data-testid="waveform-peak-sample-rate">
+        {props.config.waveformPeakSampleRate === null ? 'auto' : props.config.waveformPeakSampleRate}
+      </div>
       <button type="button" onClick={props.togglePlay}>
         toggle play
       </button>
@@ -136,6 +140,50 @@ vi.mock('../src/components/Sidebar', () => ({
         }
       >
         bump offset
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.setConfig((prev) => ({
+            ...prev,
+            waveformMode: 'pcm',
+          }))
+        }
+      >
+        set pcm mode
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.setConfig((prev) => ({
+            ...prev,
+            waveformMode: 'peak',
+          }))
+        }
+      >
+        set peak mode
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.setConfig((prev) => ({
+            ...prev,
+            waveformPeakSampleRate: 960,
+          }))
+        }
+      >
+        set manual peak sample rate
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.setConfig((prev) => ({
+            ...prev,
+            showWaveform: !prev.showWaveform,
+          }))
+        }
+      >
+        toggle waveform
       </button>
       <input aria-label="Upload MIDI File" type="file" onChange={props.handleFileUpload} />
       <input aria-label="Upload Audio File" type="file" onChange={props.handleAudioUpload} />
@@ -235,5 +283,55 @@ describe('App', () => {
       expect(screen.getByTestId('audio-offset')).toHaveTextContent('1000');
     });
     expect(mocks.audioEngine.seekMedia).toHaveBeenLastCalledWith(1);
+  });
+
+  it('starts peak cache builds by default and cancels them when switching to pcm mode', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText('Upload Audio File'),
+      new File(['audio'], 'backing.wav', { type: 'audio/wav' })
+    );
+    await waitFor(() => expect(screen.getByTestId('audio-file')).toHaveTextContent('backing.wav'));
+
+    const builder = mocks.waveformBuilder.mock.instances[0] as WaveformBuilderInstance;
+    expect(builder.startBuild).toHaveBeenCalledTimes(1);
+    expect(builder.startBuild).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        peaksPerSecond: [3840, 1920, 960, 480, 240, 120, 60, 30],
+      })
+    );
+
+    await user.click(screen.getByRole('button', { name: 'set pcm mode' }));
+
+    await waitFor(() => expect(screen.getByTestId('waveform-mode')).toHaveTextContent('pcm'));
+    expect(builder.cancelBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds the peak cache when the manual peak sample rate changes', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText('Upload Audio File'),
+      new File(['audio'], 'backing.wav', { type: 'audio/wav' })
+    );
+    await waitFor(() => expect(screen.getByTestId('audio-file')).toHaveTextContent('backing.wav'));
+
+    const builder = mocks.waveformBuilder.mock.instances[0] as WaveformBuilderInstance;
+    builder.startBuild.mockClear();
+    builder.cancelBuild.mockClear();
+
+    await user.click(screen.getByRole('button', { name: 'set manual peak sample rate' }));
+
+    await waitFor(() => expect(screen.getByTestId('waveform-peak-sample-rate')).toHaveTextContent('960'));
+    expect(builder.cancelBuild).toHaveBeenCalledTimes(1);
+    expect(builder.startBuild).toHaveBeenCalledTimes(1);
+    expect(builder.startBuild).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        peaksPerSecond: [960],
+      })
+    );
   });
 });

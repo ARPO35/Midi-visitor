@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildWaveformLineData, shouldRenderWaveformLine } from './waveformLine';
+import { buildWaveformLineData } from './waveformLine';
 
 describe('buildWaveformLineData', () => {
   it('keeps mono samples unchanged', () => {
@@ -18,15 +18,5 @@ describe('buildWaveformLineData', () => {
     const result = buildWaveformLineData([left.buffer, right.buffer], left.length, 44_100);
 
     expect(Array.from(result.samples)).toEqual([0, 0, 0]);
-  });
-});
-
-describe('shouldRenderWaveformLine', () => {
-  it('returns false when too many samples map to a single pixel', () => {
-    expect(shouldRenderWaveformLine(48_000, 1, 100)).toBe(false);
-  });
-
-  it('returns true when the visible window is detailed enough for a real waveform line', () => {
-    expect(shouldRenderWaveformLine(48_000, 0.005, 100)).toBe(true);
   });
 });

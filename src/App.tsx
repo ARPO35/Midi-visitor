@@ -19,16 +19,16 @@ import { ScrollDirection } from './types';
 import { audioEngine } from './services/audio';
 import { WaveformBuilder } from './services/waveformBuilder';
 import { getViewportTimeWindow } from './services/viewportWindow';
+import { getRequestedWaveformLevels } from './services/waveformPeak';
 import {
   buildNoteTimelineIndex,
   findPlaybackNoteCursor,
   getNoteRangeForWindow,
   type NoteTimelineIndex,
 } from './services/noteIndex';
-import { buildWaveformLineData, shouldRenderWaveformLine } from './services/waveformLine';
+import { buildWaveformLineData } from './services/waveformLine';
 
 const WAVEFORM_CHUNK_DURATION_SEC = 5;
-const WAVEFORM_LEVELS = [480, 240, 120, 60, 30];
 const UI_SYNC_INTERVAL_MS = 100;
 
 const IDLE_WAVEFORM_PROGRESS: WaveformBuildProgress = {
@@ -77,6 +77,7 @@ const App: React.FC = () => {
   const playbackNoteCursorRef = useRef(0);
   const waveformCacheRef = useRef<WaveformCache | null>(null);
   const waveformLineRef = useRef<WaveformLineData | null>(null);
+  const loadedAudioSourceRef = useRef<AudioLoadResult | null>(null);
   const waveformBuilderRef = useRef<WaveformBuilder | null>(null);
   const waveformGenerationRef = useRef(0);
 
@@ -95,6 +96,16 @@ const App: React.FC = () => {
     waveformGenerationRef.current += 1;
     waveformCacheRef.current = null;
     setWaveformBuildProgress(IDLE_WAVEFORM_PROGRESS);
+  }, []);
+
+  const cancelWaveformBuild = useCallback(() => {
+    const generationId = waveformGenerationRef.current;
+    if (generationId > 0) {
+      waveformBuilderRef.current?.cancelBuild(generationId);
+    }
+
+    waveformGenerationRef.current += 1;
+    waveformCacheRef.current = null;
   }, []);
 
   const resetPlaybackPosition = useCallback((time: number) => {
@@ -260,6 +271,9 @@ const App: React.FC = () => {
     const builder = waveformBuilderRef.current;
     if (!builder) return;
 
+    const requestedLevels = getRequestedWaveformLevels(config.waveformPeakSampleRate);
+    const transferBuffers = audioData.channelBuffers.map((buffer) => buffer.slice(0));
+
     resetWaveformState();
 
     const generationId = waveformGenerationRef.current;
@@ -270,12 +284,12 @@ const App: React.FC = () => {
 
     waveformCacheRef.current = {
       generationId,
-      peaksPerSecond: [...WAVEFORM_LEVELS],
+      peaksPerSecond: requestedLevels,
       chunkDurationSec: WAVEFORM_CHUNK_DURATION_SEC,
       totalChunks,
       duration: audioData.duration,
       levels: new Map<number, WaveformLevelCache>(
-        WAVEFORM_LEVELS.map((peaksPerSecond) => [
+        requestedLevels.map((peaksPerSecond) => [
           peaksPerSecond,
           { peaksPerSecond, chunks: new Map<number, Float32Array>() },
         ])
@@ -285,7 +299,7 @@ const App: React.FC = () => {
 
     setWaveformBuildProgress({
       generationId,
-      peaksPerSecond: [...WAVEFORM_LEVELS],
+      peaksPerSecond: requestedLevels,
       completedChunks: 0,
       totalChunks,
       status: 'building',
@@ -297,11 +311,11 @@ const App: React.FC = () => {
       sampleRate: audioData.sampleRate,
       duration: audioData.duration,
       totalSamples: audioData.totalSamples,
-      channelBuffers: audioData.channelBuffers,
-      peaksPerSecond: WAVEFORM_LEVELS,
+      channelBuffers: transferBuffers,
+      peaksPerSecond: requestedLevels,
       chunkDurationSec: WAVEFORM_CHUNK_DURATION_SEC,
     });
-  }, [resetWaveformState]);
+  }, [config.waveformPeakSampleRate, resetWaveformState]);
 
   const stopPlayback = useCallback(() => {
     setIsPlaying(false);
@@ -379,8 +393,14 @@ const App: React.FC = () => {
 
   const loadExternalAudio = useCallback(async (file: File) => {
     const audioData = await audioEngine.loadAudioFile(file);
+    const retainedChannelBuffers = audioData.channelBuffers.map((buffer) => buffer.slice(0));
+
+    loadedAudioSourceRef.current = {
+      ...audioData,
+      channelBuffers: retainedChannelBuffers,
+    };
     waveformLineRef.current = buildWaveformLineData(
-      audioData.channelBuffers,
+      retainedChannelBuffers,
       audioData.totalSamples,
       audioData.sampleRate
     );
@@ -395,8 +415,7 @@ const App: React.FC = () => {
     });
     setAudioFileName(audioData.fileName);
     stopPlayback();
-    startWaveformBuild(audioData);
-  }, [startWaveformBuild, stopPlayback]);
+  }, [stopPlayback]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -419,9 +438,29 @@ const App: React.FC = () => {
     audioEngine.clearAudio();
     setLoadedAudio(null);
     setAudioFileName(null);
+    loadedAudioSourceRef.current = null;
     waveformLineRef.current = null;
     resetWaveformState();
   }, [resetWaveformState]);
+
+  useEffect(() => {
+    const audioData = loadedAudioSourceRef.current;
+    if (!audioData) return;
+
+    if (!config.showWaveform || config.waveformMode !== 'peak') {
+      cancelWaveformBuild();
+      return;
+    }
+
+    startWaveformBuild(audioData);
+  }, [
+    config.showWaveform,
+    config.waveformMode,
+    config.waveformPeakSampleRate,
+    cancelWaveformBuild,
+    loadedAudio,
+    startWaveformBuild,
+  ]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -577,9 +616,13 @@ const App: React.FC = () => {
     axisSpan: number,
     visibleDuration: number
   ) => {
+    if (config.waveformPeakSampleRate !== null) {
+      return cache.peaksPerSecond[0] ?? Math.max(1, Math.round(config.waveformPeakSampleRate));
+    }
+
     const desiredPeaksPerSecond = Math.max(
       cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? 30,
-      Math.min(config.waveformSampleRate, axisSpan / Math.max(visibleDuration, 0.001))
+      Math.min(cache.peaksPerSecond[0] ?? 30, axisSpan / Math.max(visibleDuration, 0.001))
     );
 
     for (const peaksPerSecond of cache.peaksPerSecond) {
@@ -588,8 +631,8 @@ const App: React.FC = () => {
       }
     }
 
-    return cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? WAVEFORM_LEVELS.at(-1)!;
-  }, [config.waveformSampleRate]);
+    return cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? 30;
+  }, [config.waveformPeakSampleRate]);
 
   const drawWaveformEnvelope = useCallback((
     ctx: CanvasRenderingContext2D,
@@ -630,7 +673,7 @@ const App: React.FC = () => {
 
     ctx.fillStyle = config.waveformFillColor;
     ctx.strokeStyle = config.waveformStrokeColor;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = config.waveformLineWidth;
 
     ctx.beginPath();
     for (let chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex += 1) {
@@ -724,6 +767,7 @@ const App: React.FC = () => {
     config.direction,
     config.speed,
     config.waveformFillColor,
+    config.waveformLineWidth,
     config.waveformStrokeColor,
     selectWaveformResolution,
   ]);
@@ -755,7 +799,7 @@ const App: React.FC = () => {
     const timeSpan = Math.max(endTime - startTime, Number.EPSILON);
 
     ctx.strokeStyle = config.waveformStrokeColor;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = config.waveformLineWidth;
     ctx.beginPath();
 
     for (let pixelIndex = 0; pixelIndex <= axisPixels; pixelIndex += 1) {
@@ -795,6 +839,7 @@ const App: React.FC = () => {
   }, [
     config.direction,
     config.speed,
+    config.waveformLineWidth,
     config.waveformStrokeColor,
   ]);
 
@@ -803,27 +848,22 @@ const App: React.FC = () => {
     currentAudioTime: number,
     layout: CanvasLayout
   ) => {
-    const waveformLine = waveformLineRef.current;
     if (config.speed <= 0) return;
 
-    if (!waveformLine) {
-      drawWaveformEnvelope(ctx, currentAudioTime, layout);
-      return;
-    }
-
-    const axisSpan =
-      config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
-    const visibleDuration = axisSpan / config.speed;
-
-    if (shouldRenderWaveformLine(waveformLine.sampleRate, visibleDuration, axisSpan)) {
+    if (config.waveformMode === 'pcm') {
+      const waveformLine = waveformLineRef.current;
+      if (!waveformLine) return;
       drawWaveformLine(ctx, currentAudioTime, layout);
       return;
     }
 
-    drawWaveformEnvelope(ctx, currentAudioTime, layout);
+    if (config.waveformMode === 'peak') {
+      drawWaveformEnvelope(ctx, currentAudioTime, layout);
+      return;
+    }
   }, [
-    config.direction,
     config.speed,
+    config.waveformMode,
     drawWaveformEnvelope,
     drawWaveformLine,
   ]);
