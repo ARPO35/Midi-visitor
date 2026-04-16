@@ -1,5 +1,5 @@
 import { ScrollDirection } from './types';
-import type { VisualConfig } from './types'; // 修复：使用 import type
+import type { VisualConfig } from './types';
 
 export const DEFAULT_CONFIG: VisualConfig = {
   speed: 300,
@@ -7,10 +7,9 @@ export const DEFAULT_CONFIG: VisualConfig = {
   noteScale: 1.0,
   offset: 0,
   direction: ScrollDirection.Horizontal,
-  stretch: 20, 
+  stretch: 20,
   startDelay: 0,
   masterVolume: 100,
-  
   transpose: 0,
   bpm: 120,
   audioOffsetMs: 0,
@@ -19,30 +18,23 @@ export const DEFAULT_CONFIG: VisualConfig = {
   waveformStrokeColor: 'rgba(255, 255, 255, 0.35)',
   waveformFillColor: 'rgba(255, 255, 255, 0.08)',
   waveformSampleRate: 480,
-
   boundTop: 15,
   boundBottom: 15,
   boundLeft: 15,
   boundRight: 15,
-
   globalBgColor: '#000000',
-  
   windowBgColor: 'rgba(20, 20, 20, 0.6)',
   windowBlur: 20,
   borderRadius: 30,
   borderWidth: 1,
   borderColor: 'rgba(255, 255, 255, 0.15)',
-  
   shadowColor: 'rgba(0, 0, 0, 0.6)',
   shadowBlur: 40,
   shadowX: 0,
   shadowY: 20,
-  
   overlayColor: 'rgba(255, 255, 255, 0.02)',
-
   noteColor: 'rgba(255, 255, 255, 0.9)',
   playHeadColor: 'rgba(255, 255, 255, 0.5)',
-
   hiddenTracks: [],
 };
 

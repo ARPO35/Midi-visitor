@@ -4,6 +4,13 @@ import { ScrollDirection } from '../types';
 import { THEME } from '../constants';
 import ColorPicker from './ColorPicker';
 import {
+  SPEED_MAX,
+  SPEED_MIN,
+  SPEED_SLIDER_MAX,
+  speedToSliderValue,
+  sliderValueToSpeed,
+} from '../services/speedControl';
+import {
   AudioLines,
   AudioWaveform,
   Eye,
@@ -332,13 +339,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           <Gauge size={14} />
                           <span className="text-[10px] uppercase tracking-wider">BPM</span>
                         </div>
-                        <input
-                          type="number"
-                          aria-label="BPM"
-                          value={Math.round(config.bpm)}
-                          onChange={(e) => updateConfig('bpm', parseFloat(e.target.value))}
-                          className="w-full bg-zinc-800 border border-zinc-600 rounded text-xs px-2 py-1.5 text-right text-white focus:outline-none focus:border-white transition-colors font-mono"
-                        />
+                        <BpmInput value={config.bpm} onChange={(v) => updateConfig('bpm', v)} />
                       </div>
                       <div>
                         <div className="flex items-center gap-2 mb-2 text-zinc-400">
@@ -444,7 +445,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               <ColorPicker label="Playhead" value={config.playHeadColor} onChange={(v) => updateConfig('playHeadColor', v)} />
 
               <div className="pt-2 space-y-4 border-t border-zinc-800/50">
-                <RangeControl label="Speed" value={config.speed} min={10} max={18000} step={10} onChange={(v) => updateConfig('speed', v)} />
+                <SpeedControl value={config.speed} onChange={(v) => updateConfig('speed', v)} />
                 <RangeControl label="Thickness" value={config.noteThickness} min={1} max={100} onChange={(v) => updateConfig('noteThickness', v)} />
                 <RangeControl label="Stretch (Pitch)" value={config.stretch} min={1} max={100} onChange={handleStretchChange} />
                 <RangeControl label="Scale (Length)" value={config.noteScale} min={0.1} max={10} step={0.1} onChange={(v) => updateConfig('noteScale', v)} />
@@ -527,6 +528,132 @@ const FineAudioOffsetControl: React.FC<{
     />
   </div>
 );
+
+const BpmInput: React.FC<{
+  value: number;
+  onChange: (value: number) => void;
+}> = ({ value, onChange }) => {
+  const [draft, setDraft] = useState(value.toString());
+  const ignoreNextBlurRef = useRef(false);
+
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+
+    if (trimmed === '' || !Number.isFinite(parsed)) {
+      setDraft(value.toString());
+      return;
+    }
+
+    const nextValue = Math.max(1, parsed);
+    setDraft(nextValue.toString());
+    onChange(nextValue);
+  };
+
+  const handleBlur = () => {
+    if (ignoreNextBlurRef.current) {
+      ignoreNextBlurRef.current = false;
+      setDraft(value.toString());
+      return;
+    }
+
+    commitDraft();
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      aria-label="BPM"
+      value={draft}
+      onFocus={(e) => {
+        setDraft(value.toString());
+        e.currentTarget.select();
+      }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={handleBlur}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur();
+        }
+        if (e.key === 'Escape') {
+          ignoreNextBlurRef.current = true;
+          setDraft(value.toString());
+          e.currentTarget.blur();
+        }
+      }}
+      className="w-full bg-zinc-800 border border-zinc-600 rounded text-xs px-2 py-1.5 text-right text-white focus:outline-none focus:border-white transition-colors font-mono"
+    />
+  );
+};
+
+const SpeedControl: React.FC<{
+  value: number;
+  onChange: (value: number) => void;
+}> = ({ value, onChange }) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  const commitValue = () => {
+    setIsEditing(false);
+    const parsed = parseFloat(editValue);
+    if (!Number.isNaN(parsed)) {
+      onChange(Math.min(Math.max(Math.round(parsed), SPEED_MIN), SPEED_MAX));
+    }
+  };
+
+  return (
+    <div className="group">
+      <div className="flex justify-between mb-1.5 items-center">
+        <label className="text-[10px] text-zinc-500 uppercase tracking-wider">Speed</label>
+        {isEditing ? (
+          <input
+            ref={inputRef}
+            type="number"
+            aria-label="Edit Speed"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitValue}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitValue();
+              if (e.key === 'Escape') setIsEditing(false);
+            }}
+            className="w-24 text-right bg-zinc-800 text-[10px] text-white font-mono rounded border border-zinc-600 focus:outline-none focus:border-white px-1"
+          />
+        ) : (
+          <span
+            className="text-[10px] text-zinc-400 font-mono cursor-text hover:text-white"
+            onDoubleClick={() => {
+              setEditValue(value.toString());
+              setIsEditing(true);
+            }}
+            title="Double click to edit"
+          >
+            {value}
+          </span>
+        )}
+      </div>
+      <input
+        type="range"
+        aria-label="Speed"
+        min={0}
+        max={SPEED_SLIDER_MAX}
+        step={1}
+        value={speedToSliderValue(value)}
+        onChange={(e) => onChange(sliderValueToSpeed(parseFloat(e.target.value)))}
+        className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400 hover:accent-white transition-all"
+      />
+    </div>
+  );
+};
 
 const RangeControl: React.FC<{
   label: string;
