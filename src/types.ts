@@ -92,6 +92,12 @@ export interface AudioLoadResult extends LoadedAudioData {
   channelBuffers: ArrayBuffer[];
 }
 
+export interface WaveformLineData {
+  samples: Float32Array;
+  sampleRate: number;
+  totalSamples: number;
+}
+
 export interface WaveformChunkPayload {
   peaksPerSecond: number;
   chunkIndex: number;

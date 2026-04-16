@@ -12,11 +12,20 @@ import type {
   WaveformBuildEvent,
   WaveformBuildProgress,
   WaveformCache,
+  WaveformLineData,
   WaveformLevelCache,
 } from './types';
 import { ScrollDirection } from './types';
 import { audioEngine } from './services/audio';
 import { WaveformBuilder } from './services/waveformBuilder';
+import { getViewportTimeWindow } from './services/viewportWindow';
+import {
+  buildNoteTimelineIndex,
+  findPlaybackNoteCursor,
+  getNoteRangeForWindow,
+  type NoteTimelineIndex,
+} from './services/noteIndex';
+import { buildWaveformLineData, shouldRenderWaveformLine } from './services/waveformLine';
 
 const WAVEFORM_CHUNK_DURATION_SEC = 5;
 const WAVEFORM_LEVELS = [480, 240, 120, 60, 30];
@@ -64,7 +73,10 @@ const App: React.FC = () => {
   const lastNoteCheckTimeRef = useRef<number>(-config.startDelay);
   const lastUiSyncTimeRef = useRef<number>(0);
   const canvasLayoutRef = useRef<CanvasLayout | null>(null);
+  const noteTimelineRef = useRef<NoteTimelineIndex | null>(null);
+  const playbackNoteCursorRef = useRef(0);
   const waveformCacheRef = useRef<WaveformCache | null>(null);
+  const waveformLineRef = useRef<WaveformLineData | null>(null);
   const waveformBuilderRef = useRef<WaveformBuilder | null>(null);
   const waveformGenerationRef = useRef(0);
 
@@ -83,6 +95,14 @@ const App: React.FC = () => {
     waveformGenerationRef.current += 1;
     waveformCacheRef.current = null;
     setWaveformBuildProgress(IDLE_WAVEFORM_PROGRESS);
+  }, []);
+
+  const resetPlaybackPosition = useCallback((time: number) => {
+    playbackCursorRef.current = time;
+    lastNoteCheckTimeRef.current = time;
+    playbackNoteCursorRef.current = noteTimelineRef.current
+      ? findPlaybackNoteCursor(noteTimelineRef.current, time)
+      : 0;
   }, []);
 
   const updateCanvasLayout = useCallback(() => {
@@ -291,11 +311,10 @@ const App: React.FC = () => {
       audioEngine.seekMedia(Math.max(0, config.audioOffsetMs / 1000));
     }
 
-    playbackCursorRef.current = -config.startDelay;
-    lastNoteCheckTimeRef.current = -config.startDelay;
+    resetPlaybackPosition(-config.startDelay);
     lastUiSyncTimeRef.current = 0;
     setPlaybackTime(0);
-  }, [config.audioOffsetMs, config.startDelay, hasExternalAudio]);
+  }, [config.audioOffsetMs, config.startDelay, hasExternalAudio, resetPlaybackPosition]);
 
   const processMidiFile = async (file: File) => {
     setFileName(file.name);
@@ -336,16 +355,18 @@ const App: React.FC = () => {
           });
         });
 
-        allNotes.sort((a, b) => a.time - b.time);
+        const noteTimeline = buildNoteTimelineIndex(allNotes);
+        noteTimelineRef.current = noteTimeline;
 
         setMidiData({
-          notes: allNotes,
+          notes: noteTimeline.notes,
           tracks: trackInfos,
           duration: midi.duration,
           originalBpm: midiOriginalBpm,
         });
 
         setConfig((prev) => ({ ...prev, bpm: midiOriginalBpm }));
+        playbackNoteCursorRef.current = findPlaybackNoteCursor(noteTimeline, 0);
         stopPlayback();
       } catch (err) {
         console.error('Failed to parse MIDI', err);
@@ -358,6 +379,11 @@ const App: React.FC = () => {
 
   const loadExternalAudio = useCallback(async (file: File) => {
     const audioData = await audioEngine.loadAudioFile(file);
+    waveformLineRef.current = buildWaveformLineData(
+      audioData.channelBuffers,
+      audioData.totalSamples,
+      audioData.sampleRate
+    );
 
     setLoadedAudio({
       fileName: audioData.fileName,
@@ -393,6 +419,7 @@ const App: React.FC = () => {
     audioEngine.clearAudio();
     setLoadedAudio(null);
     setAudioFileName(null);
+    waveformLineRef.current = null;
     resetWaveformState();
   }, [resetWaveformState]);
 
@@ -413,7 +440,9 @@ const App: React.FC = () => {
     const file = e.dataTransfer.files[0];
     if (!file) return;
 
-    if (file.name.endsWith('.mid') || file.name.endsWith('.midi')) {
+    const lowerName = file.name.toLowerCase();
+
+    if (lowerName.endsWith('.mid') || lowerName.endsWith('.midi')) {
       await processMidiFile(file);
       return;
     }
@@ -437,9 +466,19 @@ const App: React.FC = () => {
     [config.audioOffsetMs, hasExternalAudio]
   );
 
+  useEffect(() => {
+    if (!hasExternalAudio) return;
+    syncExternalAudioToPlayhead(Math.max(0, playbackCursorRef.current));
+  }, [config.audioOffsetMs, hasExternalAudio, isPlaying, syncExternalAudioToPlayhead]);
+
   const togglePlay = useCallback(async () => {
     if (!midiData) return;
-    await audioEngine.resume();
+    try {
+      await audioEngine.resume();
+    } catch (err) {
+      console.error('Failed to resume audio context', err);
+      return;
+    }
 
     if (isPlaying) {
       setIsPlaying(false);
@@ -449,20 +488,32 @@ const App: React.FC = () => {
       return;
     }
 
-    setIsPlaying(true);
-    lastFrameTimeRef.current = performance.now();
-    lastUiSyncTimeRef.current = 0;
-
     if (playbackCursorRef.current >= midiData.duration) {
-      playbackCursorRef.current = -config.startDelay;
-      lastNoteCheckTimeRef.current = -config.startDelay;
+      resetPlaybackPosition(-config.startDelay);
     }
 
     if (hasExternalAudio) {
       syncExternalAudioToPlayhead(Math.max(0, playbackCursorRef.current));
-      await audioEngine.playMedia();
+      try {
+        await audioEngine.playMedia();
+      } catch (err) {
+        console.error('Failed to play external audio', err);
+        audioEngine.pauseMedia();
+        return;
+      }
     }
-  }, [config.startDelay, hasExternalAudio, isPlaying, midiData, syncExternalAudioToPlayhead]);
+
+    lastFrameTimeRef.current = performance.now();
+    lastUiSyncTimeRef.current = 0;
+    setIsPlaying(true);
+  }, [
+    config.startDelay,
+    hasExternalAudio,
+    isPlaying,
+    midiData,
+    resetPlaybackPosition,
+    syncExternalAudioToPlayhead,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -482,8 +533,7 @@ const App: React.FC = () => {
   }, [togglePlay, stopPlayback]);
 
   const handleSeek = (time: number) => {
-    playbackCursorRef.current = time;
-    lastNoteCheckTimeRef.current = time;
+    resetPlaybackPosition(time);
     lastUiSyncTimeRef.current = performance.now();
     setPlaybackTime(time);
     syncExternalAudioToPlayhead(time);
@@ -498,15 +548,14 @@ const App: React.FC = () => {
     }
 
     audioEngine.setVolume(0);
-    playbackCursorRef.current = -config.startDelay;
-    lastNoteCheckTimeRef.current = -config.startDelay;
+    resetPlaybackPosition(-config.startDelay);
     lastUiSyncTimeRef.current = 0;
     setPlaybackTime(0);
 
     setTimeout(() => {
       audioEngine.setVolume(config.masterVolume);
     }, 150);
-  }, [config.masterVolume, config.startDelay, hasExternalAudio]);
+  }, [config.masterVolume, config.startDelay, hasExternalAudio, resetPlaybackPosition]);
 
   const drawRoundedRect = (
     ctx: CanvasRenderingContext2D,
@@ -542,7 +591,7 @@ const App: React.FC = () => {
     return cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? WAVEFORM_LEVELS.at(-1)!;
   }, [config.waveformSampleRate]);
 
-  const drawWaveform = useCallback((
+  const drawWaveformEnvelope = useCallback((
     ctx: CanvasRenderingContext2D,
     currentAudioTime: number,
     layout: CanvasLayout
@@ -679,6 +728,106 @@ const App: React.FC = () => {
     selectWaveformResolution,
   ]);
 
+  const drawWaveformLine = useCallback((
+    ctx: CanvasRenderingContext2D,
+    currentAudioTime: number,
+    layout: CanvasLayout
+  ) => {
+    const waveformLine = waveformLineRef.current;
+    if (!waveformLine || waveformLine.totalSamples === 0 || config.speed <= 0) return;
+
+    const axisSpan =
+      config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
+    if (axisSpan <= 1) return;
+
+    const visibleDuration = axisSpan / config.speed;
+    const halfSpanSeconds = visibleDuration / 2;
+    const startTime = Math.max(0, currentAudioTime - halfSpanSeconds);
+    const endTime = Math.min(
+      waveformLine.totalSamples / waveformLine.sampleRate,
+      currentAudioTime + halfSpanSeconds
+    );
+    if (endTime <= startTime) return;
+
+    const amplitudeScale =
+      (config.direction === ScrollDirection.Horizontal ? layout.activeH : layout.activeW) * 0.45;
+    const axisPixels = Math.max(1, Math.floor(axisSpan));
+    const timeSpan = Math.max(endTime - startTime, Number.EPSILON);
+
+    ctx.strokeStyle = config.waveformStrokeColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+
+    for (let pixelIndex = 0; pixelIndex <= axisPixels; pixelIndex += 1) {
+      const ratio = pixelIndex / axisPixels;
+      const sampleTime = startTime + ratio * timeSpan;
+      const sampleIndex = Math.min(
+        waveformLine.totalSamples - 1,
+        Math.max(0, Math.round(sampleTime * waveformLine.sampleRate))
+      );
+      const amplitude = waveformLine.samples[sampleIndex] ?? 0;
+
+      if (config.direction === ScrollDirection.Horizontal) {
+        const x = layout.activeX + ratio * layout.activeW;
+        const y = layout.activeCY - amplitude * amplitudeScale;
+        if (pixelIndex === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      } else {
+        const x = layout.activeCX - amplitude * amplitudeScale;
+        const y = layout.activeY + ratio * layout.activeH;
+        if (pixelIndex === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+    }
+
+    ctx.stroke();
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    if (config.direction === ScrollDirection.Horizontal) {
+      ctx.moveTo(layout.activeX, layout.activeCY);
+      ctx.lineTo(layout.activeX + layout.activeW, layout.activeCY);
+    } else {
+      ctx.moveTo(layout.activeCX, layout.activeY);
+      ctx.lineTo(layout.activeCX, layout.activeY + layout.activeH);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }, [
+    config.direction,
+    config.speed,
+    config.waveformStrokeColor,
+  ]);
+
+  const drawWaveform = useCallback((
+    ctx: CanvasRenderingContext2D,
+    currentAudioTime: number,
+    layout: CanvasLayout
+  ) => {
+    const waveformLine = waveformLineRef.current;
+    if (config.speed <= 0) return;
+
+    if (!waveformLine) {
+      drawWaveformEnvelope(ctx, currentAudioTime, layout);
+      return;
+    }
+
+    const axisSpan =
+      config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
+    const visibleDuration = axisSpan / config.speed;
+
+    if (shouldRenderWaveformLine(waveformLine.sampleRate, visibleDuration, axisSpan)) {
+      drawWaveformLine(ctx, currentAudioTime, layout);
+      return;
+    }
+
+    drawWaveformEnvelope(ctx, currentAudioTime, layout);
+  }, [
+    config.direction,
+    config.speed,
+    drawWaveformEnvelope,
+    drawWaveformLine,
+  ]);
+
   useEffect(() => {
     const animate = () => {
       const now = performance.now();
@@ -702,23 +851,25 @@ const App: React.FC = () => {
       lastFrameTimeRef.current = now;
 
       const currentTime = playbackCursorRef.current;
-      const currentAudioTime = hasExternalAudio
-        ? isPlaying
-          ? audioEngine.mediaCurrentTime
-          : Math.max(0, currentTime + config.audioOffsetMs / 1000)
+      const waveformAnchorTime = hasExternalAudio
+        ? Math.max(0, currentTime + config.audioOffsetMs / 1000)
         : 0;
 
-      if (isPlaying && midiData && currentTime >= 0) {
+      const noteTimeline = noteTimelineRef.current;
+
+      if (isPlaying && noteTimeline && currentTime >= 0) {
         const prevTime = lastNoteCheckTimeRef.current;
         const hiddenTracks = new Set(config.hiddenTracks);
 
         if (currentTime > prevTime) {
-          const tempoMultiplier = midiData.originalBpm ? effectiveBpm / midiData.originalBpm : 1.0;
+          const tempoMultiplier = midiData?.originalBpm ? effectiveBpm / midiData.originalBpm : 1.0;
 
-          for (const note of midiData.notes) {
-            if (hiddenTracks.has(note.track)) continue;
+          let noteCursor = playbackNoteCursorRef.current;
+          const notes = noteTimeline.notes;
 
-            if (note.time >= prevTime && note.time < currentTime) {
+          while (noteCursor < notes.length && notes[noteCursor].time < currentTime) {
+            const note = notes[noteCursor];
+            if (note.time >= prevTime && !hiddenTracks.has(note.track)) {
               audioEngine.playNote(
                 note.midi,
                 note.duration,
@@ -727,8 +878,11 @@ const App: React.FC = () => {
                 tempoMultiplier
               );
             }
+
+            noteCursor += 1;
           }
 
+          playbackNoteCursorRef.current = noteCursor;
           lastNoteCheckTimeRef.current = currentTime;
         }
       } else if (isPlaying && currentTime < 0) {
@@ -766,14 +920,27 @@ const App: React.FC = () => {
       }
 
       if (hasExternalAudio && config.showWaveform) {
-        drawWaveform(ctx, currentAudioTime, layout);
+        drawWaveform(ctx, waveformAnchorTime, layout);
       }
 
-      if (midiData) {
+      if (midiData && noteTimeline) {
         ctx.fillStyle = config.noteColor;
         const hiddenTracks = new Set(config.hiddenTracks);
+        const noteTailSeconds = noteTimeline.maxDuration * config.noteScale;
+        const { startTime: visibleStartTime, endTime: visibleEndTime } = getViewportTimeWindow(
+          layout,
+          config.direction,
+          currentTime,
+          config.speed
+        );
+        const { startIndex, endIndex } = getNoteRangeForWindow(
+          noteTimeline,
+          Math.max(0, visibleStartTime - noteTailSeconds),
+          visibleEndTime
+        );
 
-        for (const note of midiData.notes) {
+        for (let noteIndex = startIndex; noteIndex < endIndex; noteIndex += 1) {
+          const note = noteTimeline.notes[noteIndex];
           if (hiddenTracks.has(note.track)) continue;
 
           const timeDelta = note.time - currentTime;
