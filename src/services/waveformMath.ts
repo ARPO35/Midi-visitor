@@ -13,7 +13,8 @@ export const buildHighestResolutionChunk = (
   const sampleCount = Math.max(0, chunkEndSample - chunkStartSample);
   const peakCount = Math.max(1, Math.ceil((sampleCount / sampleRate) * peaksPerSecond));
   const peaks = new Float32Array(peakCount * 2);
-  const channelCount = channelData.length;
+  const leftChannel = channelData[0];
+  const rightChannel = channelData[1] ?? leftChannel;
 
   for (let peakIndex = 0; peakIndex < peakCount; peakIndex += 1) {
     const bucketStart = chunkStartSample + Math.floor((peakIndex / peaksPerSecond) * sampleRate);
@@ -22,23 +23,20 @@ export const buildHighestResolutionChunk = (
       chunkStartSample + Math.floor(((peakIndex + 1) / peaksPerSecond) * sampleRate)
     );
 
-    let min = 1;
-    let max = -1;
+    let leftPeak = 0;
+    let rightPeak = 0;
 
     for (let sampleIndex = bucketStart; sampleIndex < bucketEnd; sampleIndex += 1) {
-      let mixedSample = 0;
-      for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
-        mixedSample += channelData[channelIndex]?.[sampleIndex] ?? 0;
-      }
-      mixedSample /= channelCount || 1;
+      const leftSample = Math.abs(leftChannel?.[sampleIndex] ?? 0);
+      const rightSample = Math.abs(rightChannel?.[sampleIndex] ?? 0);
 
-      if (mixedSample < min) min = mixedSample;
-      if (mixedSample > max) max = mixedSample;
+      if (leftSample > leftPeak) leftPeak = leftSample;
+      if (rightSample > rightPeak) rightPeak = rightSample;
     }
 
     const writeIndex = peakIndex * 2;
-    peaks[writeIndex] = bucketEnd <= bucketStart ? 0 : min;
-    peaks[writeIndex + 1] = bucketEnd <= bucketStart ? 0 : max;
+    peaks[writeIndex] = bucketEnd <= bucketStart ? 0 : leftPeak;
+    peaks[writeIndex + 1] = bucketEnd <= bucketStart ? 0 : rightPeak;
   }
 
   return peaks;
@@ -62,18 +60,18 @@ export const aggregateChunk = (
     const sourceStart = targetIndex * ratio;
     const sourceEnd = Math.min(sourceCount, sourceStart + ratio);
 
-    let min = 1;
-    let max = -1;
+    let leftPeak = 0;
+    let rightPeak = 0;
 
     for (let sourceIndex = sourceStart; sourceIndex < sourceEnd; sourceIndex += 1) {
       const readIndex = sourceIndex * 2;
-      min = Math.min(min, sourcePeaks[readIndex] ?? 0);
-      max = Math.max(max, sourcePeaks[readIndex + 1] ?? 0);
+      leftPeak = Math.max(leftPeak, sourcePeaks[readIndex] ?? 0);
+      rightPeak = Math.max(rightPeak, sourcePeaks[readIndex + 1] ?? 0);
     }
 
     const writeIndex = targetIndex * 2;
-    targetPeaks[writeIndex] = sourceEnd <= sourceStart ? 0 : min;
-    targetPeaks[writeIndex + 1] = sourceEnd <= sourceStart ? 0 : max;
+    targetPeaks[writeIndex] = sourceEnd <= sourceStart ? 0 : leftPeak;
+    targetPeaks[writeIndex + 1] = sourceEnd <= sourceStart ? 0 : rightPeak;
   }
 
   return targetPeaks;

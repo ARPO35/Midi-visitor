@@ -933,20 +933,20 @@ const App: React.FC = () => {
 
     const readPeakAtTime = (sampleTime: number) => {
       if (sampleTime < 0 || sampleTime >= waveformCache.duration) {
-        return { min: 0, max: 0 };
+        return { upper: 0, lower: 0 };
       }
 
       const chunkIndex = Math.floor(sampleTime / waveformCache.chunkDurationSec);
       if (chunkIndex < 0 || chunkIndex >= waveformCache.totalChunks) {
-        return { min: 0, max: 0 };
+        return { upper: 0, lower: 0 };
       }
 
       const chunk = level.chunks.get(chunkIndex);
-      if (!chunk) return { min: 0, max: 0 };
+      if (!chunk) return { upper: 0, lower: 0 };
 
       const chunkStartTime = chunkIndex * waveformCache.chunkDurationSec;
       const peakCount = chunk.length / 2;
-      if (peakCount <= 0) return { min: 0, max: 0 };
+      if (peakCount <= 0) return { upper: 0, lower: 0 };
 
       const peakIndex = Math.min(
         peakCount - 1,
@@ -955,8 +955,8 @@ const App: React.FC = () => {
       const readIndex = peakIndex * 2;
 
       return {
-        min: chunk[readIndex] ?? 0,
-        max: chunk[readIndex + 1] ?? 0,
+        upper: Math.max(0, chunk[readIndex] ?? 0),
+        lower: Math.max(0, chunk[readIndex + 1] ?? 0),
       };
     };
 
@@ -977,14 +977,14 @@ const App: React.FC = () => {
         config.speed,
         axisCoord
       );
-      const { max } = readPeakAtTime(sampleTime);
+      const { upper } = readPeakAtTime(sampleTime);
 
       if (config.direction === ScrollDirection.Horizontal) {
-        const y = layout.activeCY - max * amplitudeScale;
+        const y = layout.activeCY - upper * amplitudeScale;
         if (pixelIndex === 0) ctx.moveTo(axisCoord, y);
         else ctx.lineTo(axisCoord, y);
       } else {
-        const x = layout.activeCX - max * amplitudeScale;
+        const x = layout.activeCX - upper * amplitudeScale;
         if (pixelIndex === 0) ctx.moveTo(x, axisCoord);
         else ctx.lineTo(x, axisCoord);
       }
@@ -1002,12 +1002,12 @@ const App: React.FC = () => {
         config.speed,
         axisCoord
       );
-      const { min } = readPeakAtTime(sampleTime);
+      const { lower } = readPeakAtTime(sampleTime);
 
       if (config.direction === ScrollDirection.Horizontal) {
-        ctx.lineTo(axisCoord, layout.activeCY - min * amplitudeScale);
+        ctx.lineTo(axisCoord, layout.activeCY + lower * amplitudeScale);
       } else {
-        ctx.lineTo(layout.activeCX - min * amplitudeScale, axisCoord);
+        ctx.lineTo(layout.activeCX + lower * amplitudeScale, axisCoord);
       }
     }
 

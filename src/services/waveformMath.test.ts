@@ -12,27 +12,37 @@ describe('sortPeaksPerSecond', () => {
 });
 
 describe('buildHighestResolutionChunk', () => {
-  it('mixes channels and captures min/max values per bucket', () => {
+  it('captures independent absolute peaks for left and right channels per bucket', () => {
     const channels = [
       Float32Array.from([1, -1, 0, 0]),
       Float32Array.from([-1, 1, 0.5, -0.5]),
     ];
 
     expect(Array.from(buildHighestResolutionChunk(channels, 0, 4, 4, 2))).toEqual([
-      0, 0, -0.25, 0.25,
+      1, 1, 0, 0.5,
     ]);
+  });
+
+  it('mirrors mono sources into both envelope edges', () => {
+    const channels = [Float32Array.from([0.25, -0.75, 0.1, 0.2])];
+    const result = Array.from(buildHighestResolutionChunk(channels, 0, 4, 4, 2));
+
+    expect(result[0]).toBeCloseTo(0.75, 6);
+    expect(result[1]).toBeCloseTo(0.75, 6);
+    expect(result[2]).toBeCloseTo(0.2, 6);
+    expect(result[3]).toBeCloseTo(0.2, 6);
   });
 });
 
 describe('aggregateChunk', () => {
-  it('preserves extrema when reducing resolution', () => {
-    const source = new Float32Array([-1, 0, -0.5, 0.5, 0.2, 0.8, -0.3, 0.4]);
+  it('preserves per-channel peaks when reducing resolution', () => {
+    const source = new Float32Array([0.2, 0.4, 0.6, 0.1, 0.5, 0.9, 0.8, 0.3]);
     const result = Array.from(aggregateChunk(source, 4, 2));
 
-    expect(result[0]).toBe(-1);
-    expect(result[1]).toBe(0.5);
-    expect(result[2]).toBeCloseTo(-0.3, 6);
-    expect(result[3]).toBeCloseTo(0.8, 6);
+    expect(result[0]).toBeCloseTo(0.6, 6);
+    expect(result[1]).toBeCloseTo(0.4, 6);
+    expect(result[2]).toBeCloseTo(0.8, 6);
+    expect(result[3]).toBeCloseTo(0.9, 6);
   });
 
   it('returns a copy when the resolution stays the same', () => {
