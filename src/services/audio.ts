@@ -12,6 +12,7 @@ class AudioEngine {
   private mediaElement: HTMLAudioElement;
   private mediaSource: MediaElementAudioSourceNode;
   private currentAudioUrl: string | null = null;
+  private midiSynthEnabled = true;
 
   constructor() {
     const AudioContextClass =
@@ -50,6 +51,10 @@ class AudioEngine {
   public setVolume(volume: number) {
     const gainValue = (clamp(volume, 0, 100) / 100) * MAX_SYNTH_GAIN;
     this.masterGain.gain.setTargetAtTime(gainValue, this.ctx.currentTime, 0.02);
+  }
+
+  public setMidiSynthEnabled(enabled: boolean) {
+    this.midiSynthEnabled = enabled;
   }
 
   public async loadAudioFile(file: File): Promise<AudioLoadResult> {
@@ -132,6 +137,8 @@ class AudioEngine {
     transpose: number = 0,
     tempoMultiplier: number = 1.0
   ) {
+    if (!this.midiSynthEnabled) return;
+
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     const freq = 440 * Math.pow(2, (midi + transpose - 69) / 12);

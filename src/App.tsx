@@ -107,6 +107,7 @@ const App: React.FC = () => {
   const [loadedAudio, setLoadedAudio] = useState<LoadedAudioData | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [audioFileName, setAudioFileName] = useState<string | null>(null);
+  const [canExportProject, setCanExportProject] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
@@ -308,6 +309,10 @@ const App: React.FC = () => {
   }, [config.masterVolume]);
 
   useEffect(() => {
+    audioEngine.setMidiSynthEnabled(!hasExternalAudio);
+  }, [hasExternalAudio]);
+
+  useEffect(() => {
     if (!isPlaying && playbackTime === 0) {
       playbackCursorRef.current = -config.startDelay;
       lastNoteCheckTimeRef.current = -config.startDelay;
@@ -467,6 +472,7 @@ const App: React.FC = () => {
     const noteTimeline = buildNoteTimelineIndex(allNotes);
     noteTimelineRef.current = noteTimeline;
     midiFileRef.current = file;
+    setCanExportProject(true);
     setFileName(file.name);
 
     setMidiData({
@@ -1258,7 +1264,7 @@ const App: React.FC = () => {
         handleFileUpload={handleFileUpload}
         handleAudioUpload={handleAudioUpload}
         clearAudio={clearAudio}
-        canExportProject={Boolean(midiFileRef.current)}
+        canExportProject={canExportProject}
         handleProjectExport={handleProjectExport}
         handleProjectImport={handleProjectImport}
         handleColorImageSelected={handleColorImageSelected}

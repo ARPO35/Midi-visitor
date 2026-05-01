@@ -80,6 +80,7 @@ const mocks = vi.hoisted(() => {
     resume: vi.fn().mockResolvedValue(undefined),
     loadAudioFile: vi.fn(),
     clearAudio: vi.fn(),
+    setMidiSynthEnabled: vi.fn(),
     pauseMedia: vi.fn(),
     seekMedia: vi.fn(),
     playMedia: vi.fn(),
@@ -229,6 +230,7 @@ describe('App', () => {
     mocks.audioEngine.seekMedia.mockClear();
     mocks.audioEngine.playNote.mockClear();
     mocks.audioEngine.setVolume.mockClear();
+    mocks.audioEngine.setMidiSynthEnabled.mockClear();
     mocks.audioEngine.clearAudio.mockClear();
     mocks.waveformBuilder.mockClear();
   });
@@ -270,6 +272,19 @@ describe('App', () => {
     });
     expect(mocks.audioEngine.playMedia).toHaveBeenCalledTimes(1);
     expect(mocks.audioEngine.pauseMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables MIDI sine output while external audio is loaded', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText('Upload Audio File'),
+      new File(['audio'], 'backing.wav', { type: 'audio/wav' })
+    );
+
+    await waitFor(() => expect(screen.getByTestId('audio-file')).toHaveTextContent('backing.wav'));
+    expect(mocks.audioEngine.setMidiSynthEnabled).toHaveBeenLastCalledWith(false);
   });
 
   it('re-syncs external audio immediately when audio offset changes during playback', async () => {

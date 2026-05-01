@@ -17,6 +17,7 @@ const IMAGE_ASSET_PROTOCOL = 'midi-visitor-asset:';
 const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as Array<keyof VisualConfig>;
 const CONFIG_KEY_SET = new Set<string>(CONFIG_KEYS);
 const WAVEFORM_MODES = new Set<WaveformMode>(['peak', 'pcm']);
+const RESERVED_FILE_NAME_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
 
 export interface ExportProjectPackageInput {
   config: VisualConfig;
@@ -169,8 +170,11 @@ function reserveUniquePath(usedPaths: Set<string>, path: string) {
 
 function sanitizePackageFileName(name: string, fallback: string) {
   const baseName = name.split(/[\\/]/).pop()?.trim() || fallback;
-  const sanitized = baseName
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+  const sanitized = Array.from(baseName)
+    .map((char) =>
+      char.charCodeAt(0) < 32 || RESERVED_FILE_NAME_CHARS.has(char) ? '_' : char
+    )
+    .join('')
     .replace(/\s+/g, ' ')
     .slice(0, 160)
     .trim();
