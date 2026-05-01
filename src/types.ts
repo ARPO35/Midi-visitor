@@ -58,6 +58,46 @@ export interface VisualConfig {
   hiddenTracks: number[]; // Track IDs to hide
 }
 
+export interface ProjectPackageAsset {
+  path: string;
+  fileName: string;
+  mimeType: string;
+}
+
+export interface ProjectPackageImageAsset extends ProjectPackageAsset {
+  id: string;
+  configKeys: Array<keyof VisualConfig>;
+}
+
+export interface ProjectPackageManifest {
+  schemaVersion: 1;
+  appName: 'midi-visitor';
+  exportedAt: string;
+  midi: ProjectPackageAsset;
+  audio: ProjectPackageAsset | null;
+  images: ProjectPackageImageAsset[];
+}
+
+export interface ImageAssetRecord {
+  id: string;
+  file: File;
+  objectUrl: string;
+  cssValue: string;
+}
+
+export interface LoadedProjectPackageImage {
+  id: string;
+  file: File;
+  configKeys: Array<keyof VisualConfig>;
+}
+
+export interface LoadedProjectPackage {
+  config: VisualConfig;
+  midiFile: File;
+  audioFile: File | null;
+  images: LoadedProjectPackageImage[];
+}
+
 export interface NoteData {
   midi: number;      // Pitch (0-127)
   time: number;      // Start time in seconds
