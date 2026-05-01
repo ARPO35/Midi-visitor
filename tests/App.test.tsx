@@ -29,6 +29,7 @@ type SidebarMockProps = {
   isPlaying: boolean;
   fileName: string | null;
   audioFileName: string | null;
+  currentTime: number;
   waveformBuildProgress: { status: string };
   config: VisualConfig;
   setConfig: React.Dispatch<React.SetStateAction<VisualConfig>>;
@@ -125,6 +126,7 @@ vi.mock('../src/components/Sidebar', () => ({
       <div data-testid="play-state">{props.isPlaying ? 'playing' : 'paused'}</div>
       <div data-testid="midi-file">{props.fileName ?? ''}</div>
       <div data-testid="audio-file">{props.audioFileName ?? ''}</div>
+      <div data-testid="current-time">{props.currentTime}</div>
       <div data-testid="waveform-status">{props.waveformBuildProgress.status}</div>
       <div data-testid="audio-offset">{props.config.audioOffsetMs}</div>
       <div data-testid="global-bg">{props.config.globalBgColor}</div>
@@ -137,6 +139,17 @@ vi.mock('../src/components/Sidebar', () => ({
       </button>
       <button type="button" onClick={props.stopPlayback}>
         stop playback
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.setConfig((prev) => ({
+            ...prev,
+            startDelay: 2,
+          }))
+        }
+      >
+        set start delay
       </button>
       <button
         type="button"
@@ -272,6 +285,33 @@ describe('App', () => {
     });
     expect(mocks.audioEngine.playMedia).toHaveBeenCalledTimes(1);
     expect(mocks.audioEngine.pauseMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats start delay as negative pre-roll before MIDI and audio start', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.upload(screen.getByLabelText('Upload MIDI File'), new File(['midi'], 'song.mid'));
+    await waitFor(() => expect(screen.getByTestId('midi-file')).toHaveTextContent('song.mid'));
+
+    await user.click(screen.getByRole('button', { name: 'set start delay' }));
+    await waitFor(() => expect(screen.getByTestId('current-time')).toHaveTextContent('-2'));
+
+    await user.upload(
+      screen.getByLabelText('Upload Audio File'),
+      new File(['audio'], 'backing.wav', { type: 'audio/wav' })
+    );
+    await waitFor(() => expect(screen.getByTestId('audio-file')).toHaveTextContent('backing.wav'));
+
+    mocks.audioEngine.playMedia.mockClear();
+    mocks.audioEngine.seekMedia.mockClear();
+
+    await user.click(screen.getByRole('button', { name: 'toggle play' }));
+
+    await waitFor(() => expect(screen.getByTestId('play-state')).toHaveTextContent('playing'));
+    expect(screen.getByTestId('current-time')).toHaveTextContent('-2');
+    expect(mocks.audioEngine.seekMedia).toHaveBeenLastCalledWith(0);
+    expect(mocks.audioEngine.playMedia).not.toHaveBeenCalled();
   });
 
   it('disables MIDI sine output while external audio is loaded', async () => {

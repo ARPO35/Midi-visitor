@@ -19,7 +19,7 @@ import type {
 import { ScrollDirection } from './types';
 import { audioEngine } from './services/audio';
 import { WaveformBuilder } from './services/waveformBuilder';
-import { getViewportTimeWindow } from './services/viewportWindow';
+import { getViewportTimeAtAxisPosition, getViewportTimeWindow } from './services/viewportWindow';
 import { getRequestedWaveformLevels } from './services/waveformPeak';
 import {
   buildNoteTimelineIndex,
@@ -129,6 +129,7 @@ const App: React.FC = () => {
   const loadedAudioSourceRef = useRef<AudioLoadResult | null>(null);
   const waveformBuilderRef = useRef<WaveformBuilder | null>(null);
   const waveformGenerationRef = useRef(0);
+  const externalAudioPlayRequestRef = useRef<Promise<void> | null>(null);
   const midiFileRef = useRef<File | null>(null);
   const audioFileRef = useRef<File | null>(null);
   const imageAssetsRef = useRef<Map<string, ImageAssetRecord>>(new Map());
@@ -313,11 +314,10 @@ const App: React.FC = () => {
   }, [hasExternalAudio]);
 
   useEffect(() => {
-    if (!isPlaying && playbackTime === 0) {
-      playbackCursorRef.current = -config.startDelay;
-      lastNoteCheckTimeRef.current = -config.startDelay;
+    if (!isPlaying && playbackTime <= 0) {
+      resetPlaybackPosition(-config.startDelay);
     }
-  }, [config.startDelay, isPlaying, playbackTime]);
+  }, [config.startDelay, isPlaying, playbackTime, resetPlaybackPosition]);
 
   useEffect(() => {
     return () => {
@@ -418,15 +418,17 @@ const App: React.FC = () => {
 
   const stopPlaybackForConfig = useCallback((targetConfig: VisualConfig, targetHasExternalAudio: boolean) => {
     setIsPlaying(false);
+    externalAudioPlayRequestRef.current = null;
 
     if (targetHasExternalAudio) {
       audioEngine.pauseMedia();
       audioEngine.seekMedia(Math.max(0, targetConfig.audioOffsetMs / 1000));
     }
 
-    resetPlaybackPosition(-targetConfig.startDelay);
+    const startTime = -targetConfig.startDelay;
+    resetPlaybackPosition(startTime);
     lastUiSyncTimeRef.current = 0;
-    setPlaybackTime(0);
+    setPlaybackTime(startTime);
   }, [resetPlaybackPosition]);
 
   const stopPlayback = useCallback(() => {
@@ -693,19 +695,77 @@ const App: React.FC = () => {
     }
   };
 
+  const getExternalAudioTargetTime = useCallback(
+    (playheadSeconds: number) => playheadSeconds + config.audioOffsetMs / 1000,
+    [config.audioOffsetMs]
+  );
+
+  const canPlayExternalAudioAtPlayhead = useCallback(
+    (playheadSeconds: number) =>
+      playheadSeconds >= 0 && getExternalAudioTargetTime(playheadSeconds) >= 0,
+    [getExternalAudioTargetTime]
+  );
+
   const syncExternalAudioToPlayhead = useCallback(
     (playheadSeconds: number) => {
-      if (!hasExternalAudio) return;
-      const targetAudioTime = Math.max(0, playheadSeconds + config.audioOffsetMs / 1000);
-      audioEngine.seekMedia(targetAudioTime);
+      if (!hasExternalAudio) return false;
+      audioEngine.seekMedia(Math.max(0, getExternalAudioTargetTime(playheadSeconds)));
+      return canPlayExternalAudioAtPlayhead(playheadSeconds);
     },
-    [config.audioOffsetMs, hasExternalAudio]
+    [canPlayExternalAudioAtPlayhead, getExternalAudioTargetTime, hasExternalAudio]
+  );
+
+  const requestExternalAudioPlayback = useCallback(
+    (playheadSeconds: number) => {
+      if (!hasExternalAudio) return;
+
+      if (!canPlayExternalAudioAtPlayhead(playheadSeconds)) {
+        if (!audioEngine.mediaPaused) {
+          audioEngine.pauseMedia();
+        }
+        return;
+      }
+
+      if (!audioEngine.mediaPaused || externalAudioPlayRequestRef.current) return;
+
+      syncExternalAudioToPlayhead(playheadSeconds);
+      const playRequest = audioEngine.playMedia()
+        .catch((err) => {
+          console.error('Failed to play external audio', err);
+          audioEngine.pauseMedia();
+          setIsPlaying(false);
+        })
+        .finally(() => {
+          if (externalAudioPlayRequestRef.current === playRequest) {
+            externalAudioPlayRequestRef.current = null;
+          }
+        });
+
+      externalAudioPlayRequestRef.current = playRequest;
+    },
+    [
+      canPlayExternalAudioAtPlayhead,
+      hasExternalAudio,
+      syncExternalAudioToPlayhead,
+    ]
   );
 
   useEffect(() => {
     if (!hasExternalAudio) return;
-    syncExternalAudioToPlayhead(Math.max(0, playbackCursorRef.current));
-  }, [config.audioOffsetMs, hasExternalAudio, isPlaying, syncExternalAudioToPlayhead]);
+
+    const canPlayAudio = syncExternalAudioToPlayhead(playbackCursorRef.current);
+    if (isPlaying && canPlayAudio) {
+      requestExternalAudioPlayback(playbackCursorRef.current);
+    } else if (!canPlayAudio && !audioEngine.mediaPaused) {
+      audioEngine.pauseMedia();
+    }
+  }, [
+    config.audioOffsetMs,
+    hasExternalAudio,
+    isPlaying,
+    requestExternalAudioPlayback,
+    syncExternalAudioToPlayhead,
+  ]);
 
   const togglePlay = useCallback(async () => {
     if (!midiData) return;
@@ -718,6 +778,7 @@ const App: React.FC = () => {
 
     if (isPlaying) {
       setIsPlaying(false);
+      externalAudioPlayRequestRef.current = null;
       if (hasExternalAudio) {
         audioEngine.pauseMedia();
       }
@@ -725,17 +786,23 @@ const App: React.FC = () => {
     }
 
     if (playbackCursorRef.current >= midiData.duration) {
-      resetPlaybackPosition(-config.startDelay);
+      const startTime = -config.startDelay;
+      resetPlaybackPosition(startTime);
+      setPlaybackTime(startTime);
     }
 
     if (hasExternalAudio) {
-      syncExternalAudioToPlayhead(Math.max(0, playbackCursorRef.current));
-      try {
-        await audioEngine.playMedia();
-      } catch (err) {
-        console.error('Failed to play external audio', err);
+      const canPlayAudio = syncExternalAudioToPlayhead(playbackCursorRef.current);
+      if (canPlayAudio) {
+        try {
+          await audioEngine.playMedia();
+        } catch (err) {
+          console.error('Failed to play external audio', err);
+          audioEngine.pauseMedia();
+          return;
+        }
+      } else {
         audioEngine.pauseMedia();
-        return;
       }
     }
 
@@ -772,11 +839,17 @@ const App: React.FC = () => {
     resetPlaybackPosition(time);
     lastUiSyncTimeRef.current = performance.now();
     setPlaybackTime(time);
-    syncExternalAudioToPlayhead(time);
+    const canPlayAudio = syncExternalAudioToPlayhead(time);
+    if (isPlaying && canPlayAudio) {
+      requestExternalAudioPlayback(time);
+    } else if (!canPlayAudio && hasExternalAudio) {
+      audioEngine.pauseMedia();
+    }
   };
 
   const handleSongEnd = useCallback(() => {
     setIsPlaying(false);
+    externalAudioPlayRequestRef.current = null;
 
     if (hasExternalAudio) {
       audioEngine.pauseMedia();
@@ -784,9 +857,10 @@ const App: React.FC = () => {
     }
 
     audioEngine.setVolume(0);
-    resetPlaybackPosition(-config.startDelay);
+    const startTime = -config.startDelay;
+    resetPlaybackPosition(startTime);
     lastUiSyncTimeRef.current = 0;
-    setPlaybackTime(0);
+    setPlaybackTime(startTime);
 
     setTimeout(() => {
       audioEngine.setVolume(config.masterVolume);
@@ -831,125 +905,17 @@ const App: React.FC = () => {
     return cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? 30;
   }, [config.waveformPeakSampleRate]);
 
-  const drawWaveformEnvelope = useCallback((
+  const drawWaveformCenterLine = useCallback((
     ctx: CanvasRenderingContext2D,
-    currentAudioTime: number,
     layout: CanvasLayout
   ) => {
-    const waveformCache = waveformCacheRef.current;
-    if (!waveformCache || waveformCache.completedChunks === 0 || config.speed <= 0) return;
-
-    const axisSpan =
-      config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
-    const visibleDuration = axisSpan / config.speed;
-    const halfSpanSeconds = visibleDuration / 2;
-    const startTime = Math.max(0, currentAudioTime - halfSpanSeconds);
-    const endTime = Math.min(waveformCache.duration, currentAudioTime + halfSpanSeconds);
-    if (endTime <= startTime) return;
-
-    const peaksPerSecond = selectWaveformResolution(
-      waveformCache,
-      axisSpan,
-      visibleDuration
-    );
-    const level = waveformCache.levels.get(peaksPerSecond);
-    if (!level) return;
-
-    const amplitudeScale =
-      (config.direction === ScrollDirection.Horizontal ? layout.activeH : layout.activeW) * 0.45;
-    const startChunk = Math.max(
-      0,
-      Math.floor(startTime / waveformCache.chunkDurationSec)
-    );
-    const endChunk = Math.min(
-      waveformCache.totalChunks - 1,
-      Math.ceil(endTime / waveformCache.chunkDurationSec)
-    );
-
-    let hasUpperPath = false;
-
-    ctx.fillStyle = config.waveformFillColor;
-    ctx.strokeStyle = config.waveformStrokeColor;
-    ctx.lineWidth = config.waveformLineWidth;
-
-    ctx.beginPath();
-    for (let chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex += 1) {
-      const chunk = level.chunks.get(chunkIndex);
-      if (!chunk) continue;
-
-      const chunkStartTime = chunkIndex * waveformCache.chunkDurationSec;
-      const chunkPeakCount = chunk.length / 2;
-      const localStartIndex = Math.max(
-        0,
-        Math.floor((startTime - chunkStartTime) * peaksPerSecond)
-      );
-      const localEndIndex = Math.min(
-        chunkPeakCount - 1,
-        Math.ceil((endTime - chunkStartTime) * peaksPerSecond)
-      );
-
-      for (let peakIndex = localStartIndex; peakIndex <= localEndIndex; peakIndex += 1) {
-        const peakTime = chunkStartTime + peakIndex / peaksPerSecond;
-        const axisPos = (peakTime - currentAudioTime) * config.speed;
-        const max = chunk[peakIndex * 2 + 1] ?? 0;
-
-        if (config.direction === ScrollDirection.Horizontal) {
-          const x = layout.activeCX + axisPos;
-          const y = layout.activeCY - max * amplitudeScale;
-          if (!hasUpperPath) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        } else {
-          const x = layout.activeCX - max * amplitudeScale;
-          const y = layout.activeCY + axisPos;
-          if (!hasUpperPath) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-
-        hasUpperPath = true;
-      }
-    }
-
-    if (!hasUpperPath) return;
-
-    for (let chunkIndex = endChunk; chunkIndex >= startChunk; chunkIndex -= 1) {
-      const chunk = level.chunks.get(chunkIndex);
-      if (!chunk) continue;
-
-      const chunkStartTime = chunkIndex * waveformCache.chunkDurationSec;
-      const chunkPeakCount = chunk.length / 2;
-      const localStartIndex = Math.max(
-        0,
-        Math.floor((startTime - chunkStartTime) * peaksPerSecond)
-      );
-      const localEndIndex = Math.min(
-        chunkPeakCount - 1,
-        Math.ceil((endTime - chunkStartTime) * peaksPerSecond)
-      );
-
-      for (let peakIndex = localEndIndex; peakIndex >= localStartIndex; peakIndex -= 1) {
-        const peakTime = chunkStartTime + peakIndex / peaksPerSecond;
-        const axisPos = (peakTime - currentAudioTime) * config.speed;
-        const min = chunk[peakIndex * 2] ?? 0;
-
-        if (config.direction === ScrollDirection.Horizontal) {
-          ctx.lineTo(
-            layout.activeCX + axisPos,
-            layout.activeCY - min * amplitudeScale
-          );
-        } else {
-          ctx.lineTo(
-            layout.activeCX - min * amplitudeScale,
-            layout.activeCY + axisPos
-          );
-        }
-      }
-    }
-
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    const previousAlpha = ctx.globalAlpha;
+    const previousStrokeStyle = ctx.strokeStyle;
+    const previousLineWidth = ctx.lineWidth;
 
     ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = config.waveformStrokeColor;
+    ctx.lineWidth = config.waveformLineWidth;
     ctx.beginPath();
     if (config.direction === ScrollDirection.Horizontal) {
       ctx.moveTo(layout.activeX, layout.activeCY);
@@ -959,13 +925,136 @@ const App: React.FC = () => {
       ctx.lineTo(layout.activeCX, layout.activeY + layout.activeH);
     }
     ctx.stroke();
-    ctx.globalAlpha = 1;
+
+    ctx.globalAlpha = previousAlpha;
+    ctx.strokeStyle = previousStrokeStyle;
+    ctx.lineWidth = previousLineWidth;
+  }, [
+    config.direction,
+    config.waveformLineWidth,
+    config.waveformStrokeColor,
+  ]);
+
+  const drawWaveformEnvelope = useCallback((
+    ctx: CanvasRenderingContext2D,
+    currentAudioTime: number,
+    layout: CanvasLayout
+  ) => {
+    const waveformCache = waveformCacheRef.current;
+    if (!waveformCache || config.speed <= 0) return;
+
+    const axisSpan =
+      config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
+    if (axisSpan <= 1) return;
+
+    const visibleDuration = axisSpan / config.speed;
+    const axisPixels = Math.max(1, Math.floor(axisSpan));
+
+    const peaksPerSecond = selectWaveformResolution(
+      waveformCache,
+      axisSpan,
+      visibleDuration
+    );
+    const level = waveformCache.levels.get(peaksPerSecond);
+    if (!level || waveformCache.completedChunks === 0) {
+      drawWaveformCenterLine(ctx, layout);
+      return;
+    }
+
+    const amplitudeScale =
+      (config.direction === ScrollDirection.Horizontal ? layout.activeH : layout.activeW) * 0.45;
+
+    const readPeakAtTime = (sampleTime: number) => {
+      if (sampleTime < 0 || sampleTime >= waveformCache.duration) {
+        return { min: 0, max: 0 };
+      }
+
+      const chunkIndex = Math.floor(sampleTime / waveformCache.chunkDurationSec);
+      if (chunkIndex < 0 || chunkIndex >= waveformCache.totalChunks) {
+        return { min: 0, max: 0 };
+      }
+
+      const chunk = level.chunks.get(chunkIndex);
+      if (!chunk) return { min: 0, max: 0 };
+
+      const chunkStartTime = chunkIndex * waveformCache.chunkDurationSec;
+      const peakCount = chunk.length / 2;
+      if (peakCount <= 0) return { min: 0, max: 0 };
+
+      const peakIndex = Math.min(
+        peakCount - 1,
+        Math.max(0, Math.floor((sampleTime - chunkStartTime) * peaksPerSecond))
+      );
+      const readIndex = peakIndex * 2;
+
+      return {
+        min: chunk[readIndex] ?? 0,
+        max: chunk[readIndex + 1] ?? 0,
+      };
+    };
+
+    ctx.fillStyle = config.waveformFillColor;
+    ctx.strokeStyle = config.waveformStrokeColor;
+    ctx.lineWidth = config.waveformLineWidth;
+
+    ctx.beginPath();
+    for (let pixelIndex = 0; pixelIndex <= axisPixels; pixelIndex += 1) {
+      const ratio = pixelIndex / axisPixels;
+      const axisCoord = config.direction === ScrollDirection.Horizontal
+        ? layout.activeX + ratio * layout.activeW
+        : layout.activeY + ratio * layout.activeH;
+      const sampleTime = getViewportTimeAtAxisPosition(
+        layout,
+        config.direction,
+        currentAudioTime,
+        config.speed,
+        axisCoord
+      );
+      const { max } = readPeakAtTime(sampleTime);
+
+      if (config.direction === ScrollDirection.Horizontal) {
+        const y = layout.activeCY - max * amplitudeScale;
+        if (pixelIndex === 0) ctx.moveTo(axisCoord, y);
+        else ctx.lineTo(axisCoord, y);
+      } else {
+        const x = layout.activeCX - max * amplitudeScale;
+        if (pixelIndex === 0) ctx.moveTo(x, axisCoord);
+        else ctx.lineTo(x, axisCoord);
+      }
+    }
+
+    for (let pixelIndex = axisPixels; pixelIndex >= 0; pixelIndex -= 1) {
+      const ratio = pixelIndex / axisPixels;
+      const axisCoord = config.direction === ScrollDirection.Horizontal
+        ? layout.activeX + ratio * layout.activeW
+        : layout.activeY + ratio * layout.activeH;
+      const sampleTime = getViewportTimeAtAxisPosition(
+        layout,
+        config.direction,
+        currentAudioTime,
+        config.speed,
+        axisCoord
+      );
+      const { min } = readPeakAtTime(sampleTime);
+
+      if (config.direction === ScrollDirection.Horizontal) {
+        ctx.lineTo(axisCoord, layout.activeCY - min * amplitudeScale);
+      } else {
+        ctx.lineTo(layout.activeCX - min * amplitudeScale, axisCoord);
+      }
+    }
+
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    drawWaveformCenterLine(ctx, layout);
   }, [
     config.direction,
     config.speed,
     config.waveformFillColor,
     config.waveformLineWidth,
     config.waveformStrokeColor,
+    drawWaveformCenterLine,
     selectWaveformResolution,
   ]);
 
@@ -981,19 +1070,10 @@ const App: React.FC = () => {
       config.direction === ScrollDirection.Horizontal ? layout.activeW : layout.activeH;
     if (axisSpan <= 1) return;
 
-    const visibleDuration = axisSpan / config.speed;
-    const halfSpanSeconds = visibleDuration / 2;
-    const startTime = Math.max(0, currentAudioTime - halfSpanSeconds);
-    const endTime = Math.min(
-      waveformLine.totalSamples / waveformLine.sampleRate,
-      currentAudioTime + halfSpanSeconds
-    );
-    if (endTime <= startTime) return;
-
     const amplitudeScale =
       (config.direction === ScrollDirection.Horizontal ? layout.activeH : layout.activeW) * 0.45;
     const axisPixels = Math.max(1, Math.floor(axisSpan));
-    const timeSpan = Math.max(endTime - startTime, Number.EPSILON);
+    const duration = waveformLine.totalSamples / waveformLine.sampleRate;
 
     ctx.strokeStyle = config.waveformStrokeColor;
     ctx.lineWidth = config.waveformLineWidth;
@@ -1001,43 +1081,43 @@ const App: React.FC = () => {
 
     for (let pixelIndex = 0; pixelIndex <= axisPixels; pixelIndex += 1) {
       const ratio = pixelIndex / axisPixels;
-      const sampleTime = startTime + ratio * timeSpan;
-      const sampleIndex = Math.min(
-        waveformLine.totalSamples - 1,
-        Math.max(0, Math.round(sampleTime * waveformLine.sampleRate))
+      const axisCoord = config.direction === ScrollDirection.Horizontal
+        ? layout.activeX + ratio * layout.activeW
+        : layout.activeY + ratio * layout.activeH;
+      const sampleTime = getViewportTimeAtAxisPosition(
+        layout,
+        config.direction,
+        currentAudioTime,
+        config.speed,
+        axisCoord
       );
-      const amplitude = waveformLine.samples[sampleIndex] ?? 0;
+      const sampleIndex = sampleTime < 0 || sampleTime >= duration
+        ? -1
+        : Math.min(
+          waveformLine.totalSamples - 1,
+          Math.max(0, Math.round(sampleTime * waveformLine.sampleRate))
+        );
+      const amplitude = sampleIndex < 0 ? 0 : waveformLine.samples[sampleIndex] ?? 0;
 
       if (config.direction === ScrollDirection.Horizontal) {
-        const x = layout.activeX + ratio * layout.activeW;
         const y = layout.activeCY - amplitude * amplitudeScale;
-        if (pixelIndex === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (pixelIndex === 0) ctx.moveTo(axisCoord, y);
+        else ctx.lineTo(axisCoord, y);
       } else {
         const x = layout.activeCX - amplitude * amplitudeScale;
-        const y = layout.activeY + ratio * layout.activeH;
-        if (pixelIndex === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (pixelIndex === 0) ctx.moveTo(x, axisCoord);
+        else ctx.lineTo(x, axisCoord);
       }
     }
 
     ctx.stroke();
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath();
-    if (config.direction === ScrollDirection.Horizontal) {
-      ctx.moveTo(layout.activeX, layout.activeCY);
-      ctx.lineTo(layout.activeX + layout.activeW, layout.activeCY);
-    } else {
-      ctx.moveTo(layout.activeCX, layout.activeY);
-      ctx.lineTo(layout.activeCX, layout.activeY + layout.activeH);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+    drawWaveformCenterLine(ctx, layout);
   }, [
     config.direction,
     config.speed,
     config.waveformLineWidth,
     config.waveformStrokeColor,
+    drawWaveformCenterLine,
   ]);
 
   const drawWaveform = useCallback((
@@ -1080,7 +1160,7 @@ const App: React.FC = () => {
             handleSongEnd();
           } else if (now - lastUiSyncTimeRef.current >= UI_SYNC_INTERVAL_MS) {
             lastUiSyncTimeRef.current = now;
-            setPlaybackTime(Math.max(0, playbackCursorRef.current));
+            setPlaybackTime(playbackCursorRef.current);
           }
         }
       }
@@ -1089,8 +1169,12 @@ const App: React.FC = () => {
 
       const currentTime = playbackCursorRef.current;
       const waveformAnchorTime = hasExternalAudio
-        ? Math.max(0, currentTime + config.audioOffsetMs / 1000)
+        ? currentTime + config.audioOffsetMs / 1000
         : 0;
+
+      if (isPlaying && hasExternalAudio) {
+        requestExternalAudioPlayback(currentTime);
+      }
 
       const noteTimeline = noteTimelineRef.current;
 
@@ -1226,7 +1310,17 @@ const App: React.FC = () => {
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [config, drawWaveform, effectiveBpm, handleSongEnd, hasExternalAudio, isPlaying, midiData, updateCanvasLayout]);
+  }, [
+    config,
+    drawWaveform,
+    effectiveBpm,
+    handleSongEnd,
+    hasExternalAudio,
+    isPlaying,
+    midiData,
+    requestExternalAudioPlayback,
+    updateCanvasLayout,
+  ]);
 
   const windowStyle: React.CSSProperties = {
     top: `${config.boundTop}%`,
@@ -1247,6 +1341,9 @@ const App: React.FC = () => {
     borderRadius: `${Math.max(0, config.borderRadius - config.borderWidth)}px`,
     pointerEvents: 'none',
   };
+  const visiblePlaybackTime = !isPlaying && playbackTime === 0
+    ? -config.startDelay
+    : playbackTime;
 
   return (
     <div
@@ -1274,7 +1371,7 @@ const App: React.FC = () => {
         isPlaying={isPlaying}
         togglePlay={togglePlay}
         stopPlayback={stopPlayback}
-        currentTime={playbackTime}
+        currentTime={visiblePlaybackTime}
         duration={midiData?.duration || 0}
         onSeek={handleSeek}
         tracks={midiData?.tracks || []}

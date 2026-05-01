@@ -45,3 +45,19 @@ export const getViewportTimeWindow = (
     endTime: currentTime + topPixels / speed,
   };
 };
+
+export const getViewportTimeAtAxisPosition = (
+  layout: ViewportTimeWindowLayout,
+  direction: ScrollDirection,
+  currentTime: number,
+  speed: number,
+  axisPosition: number
+) => {
+  if (speed <= 0) return currentTime;
+
+  if (direction === ScrollDirection.Horizontal) {
+    return currentTime + (axisPosition - layout.activeCX) / speed;
+  }
+
+  return currentTime + (layout.activeCY - axisPosition) / speed;
+};

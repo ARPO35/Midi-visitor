@@ -275,7 +275,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     aria-label="播放进度"
                     min={0}
                     max={duration || 100}
-                    value={Math.min(currentTime, duration || 100)}
+                    value={Math.min(Math.max(currentTime, 0), duration || 100)}
                     onChange={(e) => onSeek(parseFloat(e.target.value))}
                     className="w-full h-1.5 bg-zinc-700 rounded-full appearance-none cursor-pointer accent-white"
                   />
