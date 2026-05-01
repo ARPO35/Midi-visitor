@@ -905,36 +905,6 @@ const App: React.FC = () => {
     return cache.peaksPerSecond[cache.peaksPerSecond.length - 1] ?? 30;
   }, [config.waveformPeakSampleRate]);
 
-  const drawWaveformCenterLine = useCallback((
-    ctx: CanvasRenderingContext2D,
-    layout: CanvasLayout
-  ) => {
-    const previousAlpha = ctx.globalAlpha;
-    const previousStrokeStyle = ctx.strokeStyle;
-    const previousLineWidth = ctx.lineWidth;
-
-    ctx.globalAlpha = 0.6;
-    ctx.strokeStyle = config.waveformStrokeColor;
-    ctx.lineWidth = config.waveformLineWidth;
-    ctx.beginPath();
-    if (config.direction === ScrollDirection.Horizontal) {
-      ctx.moveTo(layout.activeX, layout.activeCY);
-      ctx.lineTo(layout.activeX + layout.activeW, layout.activeCY);
-    } else {
-      ctx.moveTo(layout.activeCX, layout.activeY);
-      ctx.lineTo(layout.activeCX, layout.activeY + layout.activeH);
-    }
-    ctx.stroke();
-
-    ctx.globalAlpha = previousAlpha;
-    ctx.strokeStyle = previousStrokeStyle;
-    ctx.lineWidth = previousLineWidth;
-  }, [
-    config.direction,
-    config.waveformLineWidth,
-    config.waveformStrokeColor,
-  ]);
-
   const drawWaveformEnvelope = useCallback((
     ctx: CanvasRenderingContext2D,
     currentAudioTime: number,
@@ -956,10 +926,7 @@ const App: React.FC = () => {
       visibleDuration
     );
     const level = waveformCache.levels.get(peaksPerSecond);
-    if (!level || waveformCache.completedChunks === 0) {
-      drawWaveformCenterLine(ctx, layout);
-      return;
-    }
+    if (!level || waveformCache.completedChunks === 0) return;
 
     const amplitudeScale =
       (config.direction === ScrollDirection.Horizontal ? layout.activeH : layout.activeW) * 0.45;
@@ -1047,14 +1014,12 @@ const App: React.FC = () => {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    drawWaveformCenterLine(ctx, layout);
   }, [
     config.direction,
     config.speed,
     config.waveformFillColor,
     config.waveformLineWidth,
     config.waveformStrokeColor,
-    drawWaveformCenterLine,
     selectWaveformResolution,
   ]);
 
@@ -1111,13 +1076,11 @@ const App: React.FC = () => {
     }
 
     ctx.stroke();
-    drawWaveformCenterLine(ctx, layout);
   }, [
     config.direction,
     config.speed,
     config.waveformLineWidth,
     config.waveformStrokeColor,
-    drawWaveformCenterLine,
   ]);
 
   const drawWaveform = useCallback((
