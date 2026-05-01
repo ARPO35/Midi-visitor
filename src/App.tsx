@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import { DEFAULT_CONFIG } from './constants';
 import type {
   AudioLoadResult,
+  ImageAssetRecord,
   LoadedAudioData,
   MidiData,
   NoteData,
@@ -27,9 +28,56 @@ import {
   type NoteTimelineIndex,
 } from './services/noteIndex';
 import { buildWaveformLineData } from './services/waveformLine';
+import {
+  buildProjectPackageFileName,
+  createImageCssValue,
+  exportProjectPackage,
+  loadProjectPackage,
+} from './services/projectPackage';
 
 const WAVEFORM_CHUNK_DURATION_SEC = 5;
 const UI_SYNC_INTERVAL_MS = 100;
+
+const createImageAssetId = (field: keyof VisualConfig) => {
+  const randomPart =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${String(field)}-${randomPart}`;
+};
+
+const downloadProjectBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+const readFileAsArrayBuffer = (file: File) => {
+  const maybeArrayBuffer = (file as Blob & { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer;
+  if (typeof maybeArrayBuffer === 'function') {
+    return maybeArrayBuffer.call(file);
+  }
+
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result;
+      if (result instanceof ArrayBuffer) {
+        resolve(result);
+        return;
+      }
+      reject(new Error('FileReader did not return an ArrayBuffer'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+    reader.readAsArrayBuffer(file);
+  });
+};
 
 const IDLE_WAVEFORM_PROGRESS: WaveformBuildProgress = {
   generationId: 0,
@@ -80,12 +128,36 @@ const App: React.FC = () => {
   const loadedAudioSourceRef = useRef<AudioLoadResult | null>(null);
   const waveformBuilderRef = useRef<WaveformBuilder | null>(null);
   const waveformGenerationRef = useRef(0);
+  const midiFileRef = useRef<File | null>(null);
+  const audioFileRef = useRef<File | null>(null);
+  const imageAssetsRef = useRef<Map<string, ImageAssetRecord>>(new Map());
 
   const hasExternalAudio = loadedAudio !== null;
   const originalBpm = midiData?.originalBpm ?? null;
   const effectiveBpm = originalBpm
     ? (hasExternalAudio ? Math.max(1, originalBpm + config.midiBpmOffset) : config.bpm)
     : config.bpm;
+
+  const revokeImageAssets = useCallback((assets: Iterable<ImageAssetRecord>) => {
+    for (const asset of assets) {
+      URL.revokeObjectURL(asset.objectUrl);
+    }
+  }, []);
+
+  const handleColorImageSelected = useCallback((field: keyof VisualConfig, file: File) => {
+    const objectUrl = URL.createObjectURL(file);
+    const cssValue = createImageCssValue(objectUrl);
+    const id = createImageAssetId(field);
+
+    imageAssetsRef.current.set(id, {
+      id,
+      file,
+      objectUrl,
+      cssValue,
+    });
+
+    return cssValue;
+  }, []);
 
   const resetWaveformState = useCallback(() => {
     const generationId = waveformGenerationRef.current;
@@ -249,6 +321,28 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    return () => {
+      revokeImageAssets(imageAssetsRef.current.values());
+      imageAssetsRef.current.clear();
+    };
+  }, [revokeImageAssets]);
+
+  useEffect(() => {
+    const activeImageValues = new Set(
+      Object.values(config).filter(
+        (value): value is string => typeof value === 'string' && value.startsWith('url')
+      )
+    );
+
+    for (const [id, asset] of imageAssetsRef.current) {
+      if (!activeImageValues.has(asset.cssValue)) {
+        URL.revokeObjectURL(asset.objectUrl);
+        imageAssetsRef.current.delete(id);
+      }
+    }
+  }, [config]);
+
+  useEffect(() => {
     updateCanvasLayout();
 
     const container = containerRef.current;
@@ -317,84 +411,84 @@ const App: React.FC = () => {
     });
   }, [config.waveformPeakSampleRate, resetWaveformState]);
 
-  const stopPlayback = useCallback(() => {
+  const stopPlaybackForConfig = useCallback((targetConfig: VisualConfig, targetHasExternalAudio: boolean) => {
     setIsPlaying(false);
 
-    if (hasExternalAudio) {
+    if (targetHasExternalAudio) {
       audioEngine.pauseMedia();
-      audioEngine.seekMedia(Math.max(0, config.audioOffsetMs / 1000));
+      audioEngine.seekMedia(Math.max(0, targetConfig.audioOffsetMs / 1000));
     }
 
-    resetPlaybackPosition(-config.startDelay);
+    resetPlaybackPosition(-targetConfig.startDelay);
     lastUiSyncTimeRef.current = 0;
     setPlaybackTime(0);
-  }, [config.audioOffsetMs, config.startDelay, hasExternalAudio, resetPlaybackPosition]);
+  }, [resetPlaybackPosition]);
 
-  const processMidiFile = async (file: File) => {
+  const stopPlayback = useCallback(() => {
+    stopPlaybackForConfig(config, hasExternalAudio);
+  }, [config, hasExternalAudio, stopPlaybackForConfig]);
+
+  const processMidiFile = useCallback(async (
+    file: File,
+    options: { syncBpmFromMidi?: boolean } = {}
+  ) => {
+    const { syncBpmFromMidi = true } = options;
+    const arrayBuffer = await readFileAsArrayBuffer(file);
+    const midi = new Midi(arrayBuffer);
+    const allNotes: NoteData[] = [];
+    const trackInfos: TrackInfo[] = [];
+
+    const midiOriginalBpm = midi.header.tempos?.length ? midi.header.tempos[0].bpm : 120;
+
+    midi.tracks.forEach((track, index) => {
+      if (track.notes.length === 0) return;
+
+      trackInfos.push({
+        id: index,
+        name: track.name,
+        instrument: track.instrument.name,
+        noteCount: track.notes.length,
+        channel: track.channel,
+      });
+
+      track.notes.forEach((note) => {
+        allNotes.push({
+          midi: note.midi,
+          time: note.time,
+          duration: note.duration,
+          velocity: note.velocity,
+          name: note.name,
+          channel: track.channel,
+          track: index,
+        });
+      });
+    });
+
+    const noteTimeline = buildNoteTimelineIndex(allNotes);
+    noteTimelineRef.current = noteTimeline;
+    midiFileRef.current = file;
     setFileName(file.name);
-    const reader = new FileReader();
 
-    reader.onload = async (ev) => {
-      const arrayBuffer = ev.target?.result as ArrayBuffer;
-      if (!arrayBuffer) return;
+    setMidiData({
+      notes: noteTimeline.notes,
+      tracks: trackInfos,
+      duration: midi.duration,
+      originalBpm: midiOriginalBpm,
+    });
 
-      try {
-        const midi = new Midi(arrayBuffer);
-        const allNotes: NoteData[] = [];
-        const trackInfos: TrackInfo[] = [];
+    if (syncBpmFromMidi) {
+      setConfig((prev) => ({ ...prev, bpm: midiOriginalBpm }));
+    }
 
-        const midiOriginalBpm = midi.header.tempos?.length ? midi.header.tempos[0].bpm : 120;
-
-        midi.tracks.forEach((track, index) => {
-          if (track.notes.length === 0) return;
-
-          trackInfos.push({
-            id: index,
-            name: track.name,
-            instrument: track.instrument.name,
-            noteCount: track.notes.length,
-            channel: track.channel,
-          });
-
-          track.notes.forEach((note) => {
-            allNotes.push({
-              midi: note.midi,
-              time: note.time,
-              duration: note.duration,
-              velocity: note.velocity,
-              name: note.name,
-              channel: track.channel,
-              track: index,
-            });
-          });
-        });
-
-        const noteTimeline = buildNoteTimelineIndex(allNotes);
-        noteTimelineRef.current = noteTimeline;
-
-        setMidiData({
-          notes: noteTimeline.notes,
-          tracks: trackInfos,
-          duration: midi.duration,
-          originalBpm: midiOriginalBpm,
-        });
-
-        setConfig((prev) => ({ ...prev, bpm: midiOriginalBpm }));
-        playbackNoteCursorRef.current = findPlaybackNoteCursor(noteTimeline, 0);
-        stopPlayback();
-      } catch (err) {
-        console.error('Failed to parse MIDI', err);
-        alert('Invalid MIDI file');
-      }
-    };
-
-    reader.readAsArrayBuffer(file);
-  };
+    playbackNoteCursorRef.current = findPlaybackNoteCursor(noteTimeline, 0);
+    stopPlayback();
+  }, [stopPlayback]);
 
   const loadExternalAudio = useCallback(async (file: File) => {
     const audioData = await audioEngine.loadAudioFile(file);
     const retainedChannelBuffers = audioData.channelBuffers.map((buffer) => buffer.slice(0));
 
+    audioFileRef.current = file;
     loadedAudioSourceRef.current = {
       ...audioData,
       channelBuffers: retainedChannelBuffers,
@@ -419,11 +513,20 @@ const App: React.FC = () => {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) await processMidiFile(file);
+    e.currentTarget.value = '';
+    if (!file) return;
+
+    try {
+      await processMidiFile(file);
+    } catch (err) {
+      console.error('Failed to parse MIDI', err);
+      alert('Invalid MIDI file');
+    }
   };
 
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.currentTarget.value = '';
     if (!file) return;
 
     try {
@@ -438,10 +541,93 @@ const App: React.FC = () => {
     audioEngine.clearAudio();
     setLoadedAudio(null);
     setAudioFileName(null);
+    audioFileRef.current = null;
     loadedAudioSourceRef.current = null;
     waveformLineRef.current = null;
     resetWaveformState();
   }, [resetWaveformState]);
+
+  const restorePackageImageAssets = useCallback((
+    packageConfig: VisualConfig,
+    images: Awaited<ReturnType<typeof loadProjectPackage>>['images']
+  ) => {
+    const nextConfig: VisualConfig = {
+      ...packageConfig,
+      hiddenTracks: [...packageConfig.hiddenTracks],
+    };
+    const nextImageAssets = new Map<string, ImageAssetRecord>();
+    const configRecord = nextConfig as Record<keyof VisualConfig, unknown>;
+
+    for (const image of images) {
+      const objectUrl = URL.createObjectURL(image.file);
+      const cssValue = createImageCssValue(objectUrl);
+
+      nextImageAssets.set(image.id, {
+        id: image.id,
+        file: image.file,
+        objectUrl,
+        cssValue,
+      });
+
+      for (const key of image.configKeys) {
+        configRecord[key] = cssValue;
+      }
+    }
+
+    revokeImageAssets(imageAssetsRef.current.values());
+    imageAssetsRef.current = nextImageAssets;
+    return nextConfig;
+  }, [revokeImageAssets]);
+
+  const handleProjectExport = useCallback(async () => {
+    if (!midiFileRef.current) return;
+
+    try {
+      const blob = await exportProjectPackage({
+        config,
+        midiFile: midiFileRef.current,
+        audioFile: audioFileRef.current,
+        imageAssets: imageAssetsRef.current.values(),
+      });
+      downloadProjectBlob(blob, buildProjectPackageFileName(midiFileRef.current.name));
+    } catch (err) {
+      console.error('Failed to export project package', err);
+      alert('配置包导出失败');
+    }
+  }, [config]);
+
+  const handleProjectImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.currentTarget.value = '';
+    if (!file) return;
+
+    try {
+      const loadedPackage = await loadProjectPackage(file);
+      await processMidiFile(loadedPackage.midiFile, { syncBpmFromMidi: false });
+
+      if (loadedPackage.audioFile) {
+        await loadExternalAudio(loadedPackage.audioFile);
+      } else {
+        clearAudio();
+      }
+
+      const restoredConfig = restorePackageImageAssets(
+        loadedPackage.config,
+        loadedPackage.images
+      );
+      setConfig(restoredConfig);
+      stopPlaybackForConfig(restoredConfig, Boolean(loadedPackage.audioFile));
+    } catch (err) {
+      console.error('Failed to import project package', err);
+      alert('配置包导入失败');
+    }
+  }, [
+    clearAudio,
+    loadExternalAudio,
+    processMidiFile,
+    restorePackageImageAssets,
+    stopPlaybackForConfig,
+  ]);
 
   useEffect(() => {
     const audioData = loadedAudioSourceRef.current;
@@ -482,7 +668,12 @@ const App: React.FC = () => {
     const lowerName = file.name.toLowerCase();
 
     if (lowerName.endsWith('.mid') || lowerName.endsWith('.midi')) {
-      await processMidiFile(file);
+      try {
+        await processMidiFile(file);
+      } catch (err) {
+        console.error('Failed to parse MIDI', err);
+        alert('Invalid MIDI file');
+      }
       return;
     }
 
@@ -1067,6 +1258,10 @@ const App: React.FC = () => {
         handleFileUpload={handleFileUpload}
         handleAudioUpload={handleAudioUpload}
         clearAudio={clearAudio}
+        canExportProject={Boolean(midiFileRef.current)}
+        handleProjectExport={handleProjectExport}
+        handleProjectImport={handleProjectImport}
+        handleColorImageSelected={handleColorImageSelected}
         fileName={fileName}
         audioFileName={audioFileName}
         hasExternalAudio={hasExternalAudio}

@@ -46,4 +46,30 @@ describe('ColorPicker', () => {
     expect(URL.createObjectURL).toHaveBeenCalledWith(file);
     expect(onChange).toHaveBeenLastCalledWith("url('blob:mock') center / cover no-repeat");
   });
+
+  it('delegates image uploads to the parent callback when provided', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onImageSelected = vi.fn(() => "url('blob:parent') center / cover no-repeat");
+    vi.mocked(URL.createObjectURL).mockClear();
+
+    render(
+      <ColorPicker
+        label="Background"
+        value="#000000"
+        onChange={onChange}
+        onImageSelected={onImageSelected}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
+    await user.click(screen.getByRole('button', { name: 'Image' }));
+
+    const file = new File(['image'], 'wallpaper.png', { type: 'image/png' });
+    await user.upload(screen.getByLabelText('Upload Background Image'), file);
+
+    expect(onImageSelected).toHaveBeenCalledWith(file);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(onChange).toHaveBeenLastCalledWith("url('blob:parent') center / cover no-repeat");
+  });
 });

@@ -5,6 +5,7 @@ interface ColorPickerProps {
   label: string;
   value: string;
   onChange: (val: string) => void;
+  onImageSelected?: (file: File) => string;
 }
 
 interface HSLA {
@@ -85,7 +86,7 @@ const PRESETS = [
 
 type Mode = 'solid' | 'gradient' | 'image';
 
-const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => {
+const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onImageSelected }) => {
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -126,6 +127,11 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange }) => 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (onImageSelected) {
+      onChange(onImageSelected(file));
+      return;
+    }
 
     const url = URL.createObjectURL(file);
     onChange(`url('${url}') center / cover no-repeat`);

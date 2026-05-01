@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import App from '../src/App';
+import { DEFAULT_CONFIG } from '../src/constants';
+import { exportProjectPackage } from '../src/services/projectPackage';
 import type { AudioLoadResult } from '../src/types';
 import type { VisualConfig } from '../src/types';
 
@@ -34,6 +36,10 @@ type SidebarMockProps = {
   stopPlayback: () => void;
   handleFileUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
   handleAudioUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  canExportProject: boolean;
+  handleProjectExport: () => void;
+  handleProjectImport: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  handleColorImageSelected: (field: keyof VisualConfig, file: File) => string;
 };
 
 type WaveformBuilderInstance = {
@@ -120,6 +126,7 @@ vi.mock('../src/components/Sidebar', () => ({
       <div data-testid="audio-file">{props.audioFileName ?? ''}</div>
       <div data-testid="waveform-status">{props.waveformBuildProgress.status}</div>
       <div data-testid="audio-offset">{props.config.audioOffsetMs}</div>
+      <div data-testid="global-bg">{props.config.globalBgColor}</div>
       <div data-testid="waveform-mode">{props.config.waveformMode}</div>
       <div data-testid="waveform-peak-sample-rate">
         {props.config.waveformPeakSampleRate === null ? 'auto' : props.config.waveformPeakSampleRate}
@@ -187,21 +194,28 @@ vi.mock('../src/components/Sidebar', () => ({
       </button>
       <input aria-label="Upload MIDI File" type="file" onChange={props.handleFileUpload} />
       <input aria-label="Upload Audio File" type="file" onChange={props.handleAudioUpload} />
+      <button type="button" disabled={!props.canExportProject} onClick={props.handleProjectExport}>
+        export project
+      </button>
+      <input aria-label="Import Project Package" type="file" onChange={props.handleProjectImport} />
+      <button
+        type="button"
+        onClick={() => {
+          const imageValue = props.handleColorImageSelected(
+            'globalBgColor',
+            new File(['image'], 'wallpaper.png', { type: 'image/png' })
+          );
+          props.setConfig((prev) => ({
+            ...prev,
+            globalBgColor: imageValue,
+          }));
+        }}
+      >
+        set image background
+      </button>
     </aside>
   ),
 }));
-
-class FileReaderMock {
-  onload: ((this: FileReader, ev: ProgressEvent<FileReader>) => void) | null = null;
-
-  readAsArrayBuffer() {
-    queueMicrotask(() => {
-      this.onload?.({
-        target: { result: new ArrayBuffer(8) },
-      } as ProgressEvent<FileReader>);
-    });
-  }
-}
 
 describe('App', () => {
   beforeEach(() => {
@@ -217,7 +231,6 @@ describe('App', () => {
     mocks.audioEngine.setVolume.mockClear();
     mocks.audioEngine.clearAudio.mockClear();
     mocks.waveformBuilder.mockClear();
-    vi.stubGlobal('FileReader', FileReaderMock);
   });
 
   it('recognizes MIDI drag-and-drop regardless of extension case', async () => {
@@ -333,5 +346,59 @@ describe('App', () => {
         peaksPerSecond: [960],
       })
     );
+  });
+
+  it('exports the current project package and triggers a zip download', async () => {
+    const user = userEvent.setup();
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => undefined);
+    render(<App />);
+
+    expect(screen.getByRole('button', { name: 'export project' })).toBeDisabled();
+
+    await user.upload(screen.getByLabelText('Upload MIDI File'), new File(['midi'], 'song.mid'));
+    await waitFor(() => expect(screen.getByTestId('midi-file')).toHaveTextContent('song.mid'));
+
+    await user.click(screen.getByRole('button', { name: 'set image background' }));
+    await waitFor(() => expect(screen.getByTestId('global-bg')).toHaveTextContent('blob:mock'));
+
+    await user.click(screen.getByRole('button', { name: 'export project' }));
+
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+    expect(URL.createObjectURL).toHaveBeenLastCalledWith(expect.any(Blob));
+  });
+
+  it('imports a project package through the existing MIDI and audio load paths', async () => {
+    const user = userEvent.setup();
+    const packageBlob = await exportProjectPackage({
+      config: {
+        ...DEFAULT_CONFIG,
+        audioOffsetMs: 750,
+        waveformMode: 'pcm',
+      },
+      midiFile: new File(['midi'], 'package.mid', { type: 'audio/midi' }),
+      audioFile: new File(['audio'], 'package.wav', { type: 'audio/wav' }),
+      imageAssets: [],
+    });
+    render(<App />);
+
+    await user.upload(
+      screen.getByLabelText('Import Project Package'),
+      new File([packageBlob], 'project.zip', { type: 'application/zip' })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('midi-file')).toHaveTextContent('package.mid');
+      expect(screen.getByTestId('audio-file')).toHaveTextContent('backing.wav');
+      expect(screen.getByTestId('audio-offset')).toHaveTextContent('750');
+      expect(screen.getByTestId('waveform-mode')).toHaveTextContent('pcm');
+    });
+    expect(mocks.midi).toHaveBeenCalledTimes(1);
+    expect(mocks.audioEngine.loadAudioFile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'package.wav' })
+    );
+    expect(mocks.audioEngine.pauseMedia).toHaveBeenCalled();
+    expect(mocks.audioEngine.seekMedia).toHaveBeenLastCalledWith(0.75);
   });
 });

@@ -34,6 +34,10 @@ const makeProps = (overrides: Partial<React.ComponentProps<typeof Sidebar>> = {}
     handleFileUpload: vi.fn(),
     handleAudioUpload: vi.fn(),
     clearAudio: vi.fn(),
+    canExportProject: false,
+    handleProjectExport: vi.fn(),
+    handleProjectImport: vi.fn(),
+    handleColorImageSelected: vi.fn(() => "url('blob:mock') center / cover no-repeat"),
     fileName: null,
     audioFileName: null,
     hasExternalAudio: false,
@@ -69,11 +73,59 @@ function resolveUpdater(call: unknown, current: VisualConfig) {
   return call as VisualConfig;
 }
 
+const expandSection = async (user: ReturnType<typeof userEvent.setup>, name: RegExp) => {
+  await user.click(screen.getByRole('button', { name }));
+};
+
 describe('Sidebar', () => {
+  it('keeps import and playback visible while configuration categories start collapsed', () => {
+    const { renderProps } = makeProps({
+      hasExternalAudio: true,
+      audioFileName: 'audio.wav',
+    });
+    render(<Sidebar {...renderProps} />);
+
+    expect(screen.getByText('导入 / 清除')).toBeInTheDocument();
+    expect(screen.getByText('播放控制')).toBeInTheDocument();
+    expect(screen.getByLabelText('导入 MIDI 文件')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /导出配置包/ })).toBeDisabled();
+    expect(screen.getByLabelText('导入配置包文件')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '播放' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /播放参数/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /同步与音乐/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /轨道过滤/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /音符与滚动/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /画布与取景/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /窗口外观/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: /波形叠加/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('BPM')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('速度')).not.toBeInTheDocument();
+  });
+
+  it('keeps project package import and export controls visible', async () => {
+    const user = userEvent.setup();
+    const handleProjectExport = vi.fn();
+    const handleProjectImport = vi.fn();
+    const { renderProps } = makeProps({
+      canExportProject: true,
+      handleProjectExport,
+      handleProjectImport,
+    });
+    render(<Sidebar {...renderProps} />);
+
+    await user.click(screen.getByRole('button', { name: /导出配置包/ }));
+    expect(handleProjectExport).toHaveBeenCalledTimes(1);
+
+    const packageFile = new File(['zip'], 'project.zip', { type: 'application/zip' });
+    await user.upload(screen.getByLabelText('导入配置包文件'), packageFile);
+    expect(handleProjectImport).toHaveBeenCalledTimes(1);
+  });
+
   it('commits only valid BPM values and clamps the minimum', async () => {
     const user = userEvent.setup();
     const { renderProps, setConfigMock } = makeProps();
     const { rerender } = render(<Sidebar {...renderProps} />);
+    await expandSection(user, /同步与音乐/i);
     const bpmInput = screen.getByLabelText('BPM');
 
     await user.clear(bpmInput);
@@ -111,8 +163,10 @@ describe('Sidebar', () => {
     const user = userEvent.setup();
     const { renderProps, setConfigMock } = makeProps();
     render(<Sidebar {...renderProps} />);
+    await expandSection(user, /音符与滚动/i);
+    await expandSection(user, /轨道过滤/i);
 
-    const stretch = screen.getByLabelText('Stretch (Pitch)');
+    const stretch = screen.getByLabelText('音高间距');
     fireEvent.change(stretch, { target: { value: '40' } });
 
     expect(setConfigMock).toHaveBeenCalledTimes(1);
@@ -134,10 +188,11 @@ describe('Sidebar', () => {
       waveformBuildProgress: makeWaveformProgress('building'),
     });
     render(<Sidebar {...renderProps} />);
+    await expandSection(user, /波形叠加/i);
 
-    expect(screen.getByText('Building 2/4')).toBeInTheDocument();
+    expect(screen.getAllByText('构建中 2/4').length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole('button', { name: 'Play' }));
+    await user.click(screen.getByRole('button', { name: '播放' }));
     expect(renderProps.togglePlay).toHaveBeenCalledTimes(1);
   });
 
@@ -148,11 +203,12 @@ describe('Sidebar', () => {
       audioFileName: 'audio.wav',
     });
     render(<Sidebar {...renderProps} />);
+    await expandSection(user, /波形叠加/i);
 
-    expect(screen.getByText('Waveform Fill')).toBeInTheDocument();
-    expect(screen.queryByText(/direct mixed waveform line/i)).not.toBeInTheDocument();
+    expect(screen.getByText('波形填充')).toBeInTheDocument();
+    expect(screen.queryByText(/直接绘制混合波形线/i)).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Waveform Line Width'), { target: { value: '2.5' } });
+    fireEvent.change(screen.getByLabelText('波形线宽'), { target: { value: '2.5' } });
     expect(setConfigMock).toHaveBeenCalledTimes(1);
     let next = resolveUpdater(setConfigMock.mock.calls[0][0], renderProps.config);
     expect(next.waveformLineWidth).toBe(2.5);
@@ -170,14 +226,15 @@ describe('Sidebar', () => {
       audioFileName: 'audio.wav',
     });
     const { rerender } = render(<Sidebar {...renderProps} />);
+    await expandSection(user, /波形叠加/i);
 
-    await user.click(screen.getByRole('button', { name: 'Manual' }));
+    await user.click(screen.getByRole('button', { name: '手动' }));
     expect(setConfigMock).toHaveBeenCalledTimes(1);
     let next = resolveUpdater(setConfigMock.mock.calls[0][0], renderProps.config);
     expect(next.waveformPeakSampleRate).toBe(960);
 
     rerender(<Sidebar {...renderProps} config={next} />);
-    const sampleRateInput = screen.getByLabelText('Waveform Peak Sample Rate');
+    const sampleRateInput = screen.getByLabelText('波形峰值采样率');
 
     await user.clear(sampleRateInput);
     await user.type(sampleRateInput, '2048');
@@ -187,7 +244,7 @@ describe('Sidebar', () => {
     next = resolveUpdater(setConfigMock.mock.calls[1][0], next);
     expect(next.waveformPeakSampleRate).toBe(2048);
 
-    await user.click(screen.getByRole('button', { name: 'Auto' }));
+    await user.click(screen.getByRole('button', { name: '自动' }));
     expect(setConfigMock.mock.calls.length).toBeGreaterThanOrEqual(3);
     next = resolveUpdater(setConfigMock.mock.calls.at(-1)?.[0], next);
     expect(next.waveformPeakSampleRate).toBeNull();
@@ -196,8 +253,9 @@ describe('Sidebar', () => {
   it('maps the speed slider exponentially into the high-speed range', () => {
     const { renderProps, setConfigMock } = makeProps();
     render(<Sidebar {...renderProps} />);
+    fireEvent.click(screen.getByRole('button', { name: /音符与滚动/i }));
 
-    const speedSlider = screen.getByLabelText('Speed');
+    const speedSlider = screen.getByLabelText('速度');
     fireEvent.change(speedSlider, { target: { value: '1000' } });
 
     expect(setConfigMock).toHaveBeenCalledTimes(1);
