@@ -20,8 +20,41 @@ interface HSLA {
   a: number;
 }
 
+interface RGBA {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
 const hslaToString = ({ h, s, l, a }: HSLA) =>
   `hsla(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%, ${a.toFixed(2).replace(/\.?0+$/, '')})`;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const rgbaToString = ({ r, g, b, a }: RGBA) =>
+  `rgba(${Math.round(clamp(r, 0, 255))}, ${Math.round(clamp(g, 0, 255))}, ${Math.round(clamp(b, 0, 255))}, ${clamp(a, 0, 1).toFixed(2).replace(/\.?0+$/, '')})`;
+
+const toHex = (value: number) => Math.round(clamp(value, 0, 255)).toString(16).padStart(2, '0');
+const rgbaToHex = ({ r, g, b }: RGBA) => `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+
+const parseColorToRgba = (str: string): RGBA => {
+  const div = document.createElement('div');
+  div.style.color = str;
+  document.body.appendChild(div);
+  const computed = window.getComputedStyle(div).color;
+  document.body.removeChild(div);
+
+  const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+  if (!match) return { r: 255, g: 255, b: 255, a: 1 };
+
+  return {
+    r: Number.parseInt(match[1], 10),
+    g: Number.parseInt(match[2], 10),
+    b: Number.parseInt(match[3], 10),
+    a: match[4] === undefined ? 1 : clamp(Number.parseFloat(match[4]), 0, 1),
+  };
+};
 
 const parseColor = (str: string): HSLA => {
   if (str.startsWith('linear-gradient') || str.startsWith('url')) {
@@ -97,6 +130,11 @@ const DEFAULT_GRADIENT_STOPS: GradientStop[] = [
 ];
 
 const MAX_GRADIENT_STOPS = 8;
+const normalizeGradientStops = (stops: GradientStop[]) =>
+  stops.map((stop) => ({
+    color: rgbaToString(parseColorToRgba(stop.color)),
+    position: stop.position,
+  }));
 
 const toGradientPreview = (angleDeg: number, stops: GradientStop[]) =>
   buildLinearGradientCss(angleDeg, stops);
@@ -111,7 +149,9 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
   const [mode, setMode] = useState<Mode>(initialMode);
   const [hsla, setHsla] = useState<HSLA>(parseColor(value));
   const [gradAngle, setGradAngle] = useState(parsedInitialGradient?.angleDeg ?? 180);
-  const [gradStops, setGradStops] = useState<GradientStop[]>(parsedInitialGradient?.stops ?? DEFAULT_GRADIENT_STOPS);
+  const [gradStops, setGradStops] = useState<GradientStop[]>(
+    normalizeGradientStops(parsedInitialGradient?.stops ?? DEFAULT_GRADIENT_STOPS)
+  );
   const [selectedStopIndex, setSelectedStopIndex] = useState(0);
 
   useEffect(() => {
@@ -143,7 +183,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
   };
 
   const setGradient = (nextAngle: number, nextStops: GradientStop[], nextSelectedStopIndex = selectedStopIndex) => {
-    const sortedStops = [...nextStops].sort((a, b) => a.position - b.position);
+    const sortedStops = normalizeGradientStops(nextStops).sort((a, b) => a.position - b.position);
     const clampedIndex = Math.max(0, Math.min(nextSelectedStopIndex, sortedStops.length - 1));
 
     setGradAngle(nextAngle);
@@ -230,7 +270,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
             if (currentMode === 'gradient') {
               const parsedGradient = parseLinearGradientCss(value);
               setGradAngle(parsedGradient?.angleDeg ?? 180);
-              setGradStops(parsedGradient?.stops ?? DEFAULT_GRADIENT_STOPS);
+              setGradStops(normalizeGradientStops(parsedGradient?.stops ?? DEFAULT_GRADIENT_STOPS));
               setSelectedStopIndex(0);
             }
 
@@ -436,13 +476,23 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
                   <div className="flex gap-2 items-center">
                     <div className="flex-1 space-y-1">
                       <div className="text-[10px] text-zinc-500">Color</div>
+                      {(() => {
+                        const selected = parseColorToRgba(gradStops[selectedStopIndex]?.color ?? '#ffffff');
+                        return (
                       <input
                         type="color"
-                        value={gradStops[selectedStopIndex]?.color ?? '#ffffff'}
+                        value={rgbaToHex(selected)}
                         aria-label="Gradient Stop Color"
-                        onChange={(e) => updateSelectedStop({ color: e.target.value })}
+                        onChange={(e) => {
+                          const nextRgb = parseColorToRgba(e.target.value);
+                          updateSelectedStop({
+                            color: rgbaToString({ ...nextRgb, a: selected.a }),
+                          });
+                        }}
                         className="w-full h-8 rounded cursor-pointer bg-transparent border border-zinc-700"
                       />
+                        );
+                      })()}
                     </div>
                     <div className="w-20 space-y-1">
                       <div className="text-[10px] text-zinc-500">Position</div>
@@ -456,6 +506,29 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
                         className="w-full bg-zinc-800 border border-zinc-700 rounded text-xs px-1 py-1 text-right text-zinc-300"
                       />
                     </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px] text-zinc-500">
+                      <span>Alpha</span>
+                      <span>
+                        {parseColorToRgba(gradStops[selectedStopIndex]?.color ?? '#ffffff').a.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={parseColorToRgba(gradStops[selectedStopIndex]?.color ?? '#ffffff').a}
+                      aria-label="Gradient Stop Alpha Slider"
+                      onChange={(e) => {
+                        const current = parseColorToRgba(gradStops[selectedStopIndex]?.color ?? '#ffffff');
+                        updateSelectedStop({
+                          color: rgbaToString({ ...current, a: Number(e.target.value) }),
+                        });
+                      }}
+                      className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
+                    />
                   </div>
                   <input
                     type="range"

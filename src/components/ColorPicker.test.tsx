@@ -26,7 +26,9 @@ describe('ColorPicker', () => {
     await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
     await user.click(screen.getByRole('button', { name: 'Gradient' }));
 
-    expect(onChange).toHaveBeenLastCalledWith('linear-gradient(180deg, #000000 0%, #ffffff 100%)');
+    expect(onChange).toHaveBeenLastCalledWith(
+      'linear-gradient(180deg, rgba(0, 0, 0, 1) 0%, rgba(255, 255, 255, 1) 100%)'
+    );
   });
 
   it('supports adding and editing gradient stops', async () => {
@@ -43,7 +45,22 @@ describe('ColorPicker', () => {
     fireEvent.change(screen.getByLabelText('Gradient Stop Color'), { target: { value: '#ff0000' } });
 
     expect(onChange).toHaveBeenLastCalledWith(
-      'linear-gradient(180deg, #000000 0%, #ff0000 25%, #ffffff 100%)'
+      'linear-gradient(180deg, rgba(0, 0, 0, 1) 0%, rgba(255, 0, 0, 1) 25%, rgba(255, 255, 255, 1) 100%)'
+    );
+  });
+
+  it('supports editing gradient stop alpha', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(<ColorPicker label="Background" value="#000000" onChange={onChange} />);
+
+    await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
+    await user.click(screen.getByRole('button', { name: 'Gradient' }));
+    fireEvent.change(screen.getByLabelText('Gradient Stop Alpha Slider'), { target: { value: '0.35' } });
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      'linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, rgba(255, 255, 255, 1) 100%)'
     );
   });
 
