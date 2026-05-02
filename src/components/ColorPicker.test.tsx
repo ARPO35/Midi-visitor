@@ -26,7 +26,42 @@ describe('ColorPicker', () => {
     await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
     await user.click(screen.getByRole('button', { name: 'Gradient' }));
 
-    expect(onChange).toHaveBeenLastCalledWith('linear-gradient(180deg, #000000, #ffffff)');
+    expect(onChange).toHaveBeenLastCalledWith('linear-gradient(180deg, #000000 0%, #ffffff 100%)');
+  });
+
+  it('supports adding and editing gradient stops', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(<ColorPicker label="Background" value="#000000" onChange={onChange} />);
+
+    await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
+    await user.click(screen.getByRole('button', { name: 'Gradient' }));
+    await user.click(screen.getByRole('button', { name: 'Add Gradient Stop' }));
+
+    fireEvent.change(screen.getByLabelText('Gradient Stop Position'), { target: { value: '25' } });
+    fireEvent.change(screen.getByLabelText('Gradient Stop Color'), { target: { value: '#ff0000' } });
+
+    expect(onChange).toHaveBeenLastCalledWith(
+      'linear-gradient(180deg, #000000 0%, #ff0000 25%, #ffffff 100%)'
+    );
+  });
+
+  it('hydrates multi-stop gradients from value', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    render(
+      <ColorPicker
+        label="Background"
+        value="linear-gradient(120deg, #111111 0%, #333333 40%, #ffffff 100%)"
+        onChange={onChange}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Change color for Background' }));
+    expect(screen.getByText('Stops (3/8)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Gradient Angle')).toHaveValue(120);
   });
 
   it('uploads image backgrounds as url strings', async () => {

@@ -1,5 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Image as ImageIcon, PaintBucket, Zap } from 'lucide-react';
+import { ChevronDown, Image as ImageIcon, PaintBucket, Plus, Trash2, Zap } from 'lucide-react';
+import {
+  buildLinearGradientCss,
+  parseLinearGradientCss,
+  type GradientStop,
+} from '../services/gradient';
 
 interface ColorPickerProps {
   label: string;
@@ -86,16 +91,28 @@ const PRESETS = [
 
 type Mode = 'solid' | 'gradient' | 'image';
 
+const DEFAULT_GRADIENT_STOPS: GradientStop[] = [
+  { color: '#000000', position: 0 },
+  { color: '#ffffff', position: 100 },
+];
+
+const MAX_GRADIENT_STOPS = 8;
+
+const toGradientPreview = (angleDeg: number, stops: GradientStop[]) =>
+  buildLinearGradientCss(angleDeg, stops);
+
 const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onImageSelected }) => {
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
   const initialMode = value.startsWith('linear-gradient') ? 'gradient' : value.startsWith('url') ? 'image' : 'solid';
+  const parsedInitialGradient = parseLinearGradientCss(value);
+
   const [mode, setMode] = useState<Mode>(initialMode);
   const [hsla, setHsla] = useState<HSLA>(parseColor(value));
-  const [gradAngle, setGradAngle] = useState(180);
-  const [gradColor1, setGradColor1] = useState('#000000');
-  const [gradColor2, setGradColor2] = useState('#ffffff');
+  const [gradAngle, setGradAngle] = useState(parsedInitialGradient?.angleDeg ?? 180);
+  const [gradStops, setGradStops] = useState<GradientStop[]>(parsedInitialGradient?.stops ?? DEFAULT_GRADIENT_STOPS);
+  const [selectedStopIndex, setSelectedStopIndex] = useState(0);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -120,8 +137,62 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
     }
   };
 
-  const updateGradient = (angle: number, c1: string, c2: string) => {
-    onChange(`linear-gradient(${angle}deg, ${c1}, ${c2})`);
+  const syncGradient = (nextAngle: number, nextStops: GradientStop[]) => {
+    const css = buildLinearGradientCss(nextAngle, nextStops);
+    onChange(css);
+  };
+
+  const setGradient = (nextAngle: number, nextStops: GradientStop[], nextSelectedStopIndex = selectedStopIndex) => {
+    const sortedStops = [...nextStops].sort((a, b) => a.position - b.position);
+    const clampedIndex = Math.max(0, Math.min(nextSelectedStopIndex, sortedStops.length - 1));
+
+    setGradAngle(nextAngle);
+    setGradStops(sortedStops);
+    setSelectedStopIndex(clampedIndex);
+    syncGradient(nextAngle, sortedStops);
+  };
+
+  const updateSelectedStop = (patch: Partial<GradientStop>) => {
+    const target = gradStops[selectedStopIndex];
+    if (!target) return;
+
+    let updatedStop: GradientStop = target;
+    const updatedStops = gradStops.map((stop, index) =>
+      index === selectedStopIndex
+        ? {
+          color: patch.color ?? stop.color,
+          position: patch.position === undefined ? stop.position : Math.min(100, Math.max(0, patch.position)),
+        }
+        : stop
+    );
+    updatedStop = updatedStops[selectedStopIndex] ?? updatedStop;
+
+    const sortedStops = [...updatedStops].sort((a, b) => a.position - b.position);
+    const nextIndex = sortedStops.findIndex(
+      (stop) => stop.color === updatedStop.color && stop.position === updatedStop.position
+    );
+    setGradient(gradAngle, sortedStops, nextIndex > -1 ? nextIndex : selectedStopIndex);
+  };
+
+  const addGradientStop = () => {
+    if (gradStops.length >= MAX_GRADIENT_STOPS) return;
+
+    const baseStop = gradStops[selectedStopIndex] ?? gradStops[gradStops.length - 1] ?? DEFAULT_GRADIENT_STOPS[0];
+    const nextPosition = Math.min(100, Math.max(0, baseStop.position + 10));
+    const newStop = { color: baseStop.color, position: nextPosition };
+    const nextStops = [...gradStops, newStop];
+    const sortedStops = [...nextStops].sort((a, b) => a.position - b.position);
+    const nextIndex = sortedStops.findIndex(
+      (stop) => stop.color === newStop.color && stop.position === newStop.position
+    );
+    setGradient(gradAngle, sortedStops, nextIndex > -1 ? nextIndex : sortedStops.length - 1);
+  };
+
+  const removeSelectedStop = () => {
+    if (gradStops.length <= 2) return;
+    const nextStops = gradStops.filter((_, index) => index !== selectedStopIndex);
+    const nextIndex = Math.max(0, selectedStopIndex - 1);
+    setGradient(gradAngle, nextStops, nextIndex);
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -151,7 +222,18 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
                 ? 'image'
                 : 'solid';
             setMode(currentMode);
-            if (currentMode === 'solid') setHsla(parseColor(value));
+
+            if (currentMode === 'solid') {
+              setHsla(parseColor(value));
+            }
+
+            if (currentMode === 'gradient') {
+              const parsedGradient = parseLinearGradientCss(value);
+              setGradAngle(parsedGradient?.angleDeg ?? 180);
+              setGradStops(parsedGradient?.stops ?? DEFAULT_GRADIENT_STOPS);
+              setSelectedStopIndex(0);
+            }
+
             setIsOpen(!isOpen);
           }}
           aria-label={`Change color for ${label}`}
@@ -183,7 +265,7 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
                 onClick={() => {
                   setMode(tab.id as Mode);
                   if (tab.id === 'solid') onChange(hslaToString(hsla));
-                  if (tab.id === 'gradient') updateGradient(gradAngle, gradColor1, gradColor2);
+                  if (tab.id === 'gradient') syncGradient(gradAngle, gradStops);
                 }}
                 aria-label={tab.label}
                 className={`flex-1 py-1.5 flex items-center justify-center rounded text-xs transition-all ${
@@ -271,16 +353,22 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
 
           {mode === 'gradient' && (
             <div className="space-y-4">
+              <div
+                className="h-8 rounded-md border border-zinc-700"
+                style={{ background: toGradientPreview(gradAngle, gradStops) }}
+                aria-label="Gradient Preview"
+              />
+
               <div className="flex items-center justify-between">
                 <span className="text-[10px] text-zinc-500">Angle</span>
                 <input
                   type="number"
-                  value={gradAngle}
+                  value={Math.round(gradAngle)}
                   aria-label="Gradient Angle"
                   onChange={(e) => {
                     const angle = Number(e.target.value);
-                    setGradAngle(angle);
-                    updateGradient(angle, gradColor1, gradColor2);
+                    if (!Number.isFinite(angle)) return;
+                    setGradient(angle, gradStops);
                   }}
                   className="w-12 bg-zinc-800 border border-zinc-700 rounded text-xs px-1 text-right text-zinc-300"
                 />
@@ -293,37 +381,90 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ label, value, onChange, onIma
                 aria-label="Gradient Angle Slider"
                 onChange={(e) => {
                   const angle = Number(e.target.value);
-                  setGradAngle(angle);
-                  updateGradient(angle, gradColor1, gradColor2);
+                  setGradient(angle, gradStops);
                 }}
                 className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
               />
 
-              <div className="flex gap-2 items-center">
-                <div className="flex-1 space-y-1">
-                  <div className="text-[10px] text-zinc-500">Start</div>
-                  <input
-                    type="color"
-                    value={gradColor1}
-                    aria-label="Gradient Start Color"
-                    onChange={(e) => {
-                      setGradColor1(e.target.value);
-                      updateGradient(gradAngle, e.target.value, gradColor2);
-                    }}
-                    className="w-full h-8 rounded cursor-pointer bg-transparent border border-zinc-700"
-                  />
+              <div className="space-y-2 rounded-lg border border-zinc-800 p-2">
+                <div className="flex items-center justify-between text-[10px] text-zinc-500 uppercase">
+                  <span>Stops ({gradStops.length}/{MAX_GRADIENT_STOPS})</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      aria-label="Add Gradient Stop"
+                      onClick={addGradientStop}
+                      disabled={gradStops.length >= MAX_GRADIENT_STOPS}
+                      className="rounded border border-zinc-700 p-1 text-zinc-300 transition-colors hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Plus size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Remove Gradient Stop"
+                      onClick={removeSelectedStop}
+                      disabled={gradStops.length <= 2}
+                      className="rounded border border-zinc-700 p-1 text-zinc-300 transition-colors hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex-1 space-y-1">
-                  <div className="text-[10px] text-zinc-500">End</div>
+
+                <div className="max-h-28 space-y-1 overflow-auto pr-1">
+                  {gradStops.map((stop, index) => (
+                    <button
+                      key={`${stop.color}-${stop.position}-${index}`}
+                      type="button"
+                      onClick={() => setSelectedStopIndex(index)}
+                      className={`w-full rounded border px-2 py-1 text-left text-[11px] ${
+                        selectedStopIndex === index
+                          ? 'border-zinc-500 bg-zinc-800 text-white'
+                          : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <span className="h-3 w-3 rounded" style={{ backgroundColor: stop.color }} />
+                        <span className="font-mono">{Math.round(stop.position)}%</span>
+                        <span className="truncate">{stop.color}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-2 border-t border-zinc-800 pt-2">
+                  <div className="flex gap-2 items-center">
+                    <div className="flex-1 space-y-1">
+                      <div className="text-[10px] text-zinc-500">Color</div>
+                      <input
+                        type="color"
+                        value={gradStops[selectedStopIndex]?.color ?? '#ffffff'}
+                        aria-label="Gradient Stop Color"
+                        onChange={(e) => updateSelectedStop({ color: e.target.value })}
+                        className="w-full h-8 rounded cursor-pointer bg-transparent border border-zinc-700"
+                      />
+                    </div>
+                    <div className="w-20 space-y-1">
+                      <div className="text-[10px] text-zinc-500">Position</div>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={Math.round(gradStops[selectedStopIndex]?.position ?? 0)}
+                        aria-label="Gradient Stop Position"
+                        onChange={(e) => updateSelectedStop({ position: Number(e.target.value) })}
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded text-xs px-1 py-1 text-right text-zinc-300"
+                      />
+                    </div>
+                  </div>
                   <input
-                    type="color"
-                    value={gradColor2}
-                    aria-label="Gradient End Color"
-                    onChange={(e) => {
-                      setGradColor2(e.target.value);
-                      updateGradient(gradAngle, gradColor1, e.target.value);
-                    }}
-                    className="w-full h-8 rounded cursor-pointer bg-transparent border border-zinc-700"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={gradStops[selectedStopIndex]?.position ?? 0}
+                    aria-label="Gradient Stop Position Slider"
+                    onChange={(e) => updateSelectedStop({ position: Number(e.target.value) })}
+                    className="w-full h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-zinc-400"
                   />
                 </div>
               </div>
