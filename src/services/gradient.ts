@@ -8,6 +8,13 @@ export interface ParsedLinearGradient {
   stops: GradientStop[];
 }
 
+export interface GradientRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const DEFAULT_STOPS: GradientStop[] = [
   { color: '#000000', position: 0 },
   { color: '#ffffff', position: 100 },
@@ -110,4 +117,28 @@ export const parseLinearGradientCss = (value: string): ParsedLinearGradient | nu
     angleDeg: normalizeAngle(angleDeg),
     stops: normalizeStops(parsed),
   };
+};
+
+export const createCanvasLinearGradient = (
+  ctx: CanvasRenderingContext2D,
+  rect: GradientRect,
+  gradient: ParsedLinearGradient
+) => {
+  const centerX = rect.x + rect.width / 2;
+  const centerY = rect.y + rect.height / 2;
+  const rad = (gradient.angleDeg * Math.PI) / 180;
+  const dirX = Math.sin(rad);
+  const dirY = -Math.cos(rad);
+  const halfLength = Math.max(1, Math.hypot(rect.width, rect.height) / 2);
+
+  const startX = centerX - dirX * halfLength;
+  const startY = centerY - dirY * halfLength;
+  const endX = centerX + dirX * halfLength;
+  const endY = centerY + dirY * halfLength;
+
+  const canvasGradient = ctx.createLinearGradient(startX, startY, endX, endY);
+  for (const stop of gradient.stops) {
+    canvasGradient.addColorStop(clamp(stop.position / 100, 0, 1), stop.color);
+  }
+  return canvasGradient;
 };

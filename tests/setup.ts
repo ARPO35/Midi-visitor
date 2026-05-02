@@ -16,6 +16,9 @@ const canvasContext = {
   roundRect: vi.fn(),
   fillRect: vi.fn(),
   strokeRect: vi.fn(),
+  createLinearGradient: vi.fn(() => ({
+    addColorStop: vi.fn(),
+  })),
   measureText: vi.fn(() => ({ width: 0 })),
   globalAlpha: 1,
   lineWidth: 1,

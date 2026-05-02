@@ -28,6 +28,7 @@ import {
   type NoteTimelineIndex,
 } from './services/noteIndex';
 import { buildWaveformLineData } from './services/waveformLine';
+import { createCanvasLinearGradient, parseLinearGradientCss } from './services/gradient';
 import {
   buildProjectPackageFileName,
   createImageCssValue,
@@ -86,6 +87,9 @@ const IDLE_WAVEFORM_PROGRESS: WaveformBuildProgress = {
   totalChunks: 0,
   status: 'idle',
 };
+
+const FALLBACK_WAVEFORM_STROKE = 'rgba(255, 255, 255, 0.35)';
+const FALLBACK_WAVEFORM_FILL = 'rgba(255, 255, 255, 0.08)';
 
 interface CanvasLayout {
   width: number;
@@ -960,10 +964,6 @@ const App: React.FC = () => {
       };
     };
 
-    ctx.fillStyle = config.waveformFillColor;
-    ctx.strokeStyle = config.waveformStrokeColor;
-    ctx.lineWidth = config.waveformLineWidth;
-
     ctx.beginPath();
     for (let pixelIndex = 0; pixelIndex <= axisPixels; pixelIndex += 1) {
       const ratio = pixelIndex / axisPixels;
@@ -1012,7 +1012,36 @@ const App: React.FC = () => {
     }
 
     ctx.closePath();
-    ctx.fill();
+
+    const gradientRect = {
+      x: layout.activeX,
+      y: layout.activeY,
+      width: layout.activeW,
+      height: layout.activeH,
+    };
+    const parsedFillGradient = parseLinearGradientCss(config.waveformFillColor);
+    if (parsedFillGradient) {
+      ctx.save();
+      ctx.clip();
+      ctx.fillStyle = createCanvasLinearGradient(ctx, gradientRect, parsedFillGradient);
+      ctx.fillRect(layout.activeX, layout.activeY, layout.activeW, layout.activeH);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = config.waveformFillColor.startsWith('url(')
+        ? FALLBACK_WAVEFORM_FILL
+        : config.waveformFillColor;
+      ctx.fill();
+    }
+
+    const parsedStrokeGradient = parseLinearGradientCss(config.waveformStrokeColor);
+    if (parsedStrokeGradient) {
+      ctx.strokeStyle = createCanvasLinearGradient(ctx, gradientRect, parsedStrokeGradient);
+    } else {
+      ctx.strokeStyle = config.waveformStrokeColor.startsWith('url(')
+        ? FALLBACK_WAVEFORM_STROKE
+        : config.waveformStrokeColor;
+    }
+    ctx.lineWidth = config.waveformLineWidth;
     ctx.stroke();
   }, [
     config.direction,
@@ -1040,7 +1069,18 @@ const App: React.FC = () => {
     const axisPixels = Math.max(1, Math.floor(axisSpan));
     const duration = waveformLine.totalSamples / waveformLine.sampleRate;
 
-    ctx.strokeStyle = config.waveformStrokeColor;
+    const gradientRect = {
+      x: layout.activeX,
+      y: layout.activeY,
+      width: layout.activeW,
+      height: layout.activeH,
+    };
+    const parsedStrokeGradient = parseLinearGradientCss(config.waveformStrokeColor);
+    ctx.strokeStyle = parsedStrokeGradient
+      ? createCanvasLinearGradient(ctx, gradientRect, parsedStrokeGradient)
+      : (config.waveformStrokeColor.startsWith('url(')
+        ? FALLBACK_WAVEFORM_STROKE
+        : config.waveformStrokeColor);
     ctx.lineWidth = config.waveformLineWidth;
     ctx.beginPath();
 
